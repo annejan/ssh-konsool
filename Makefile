@@ -71,7 +71,7 @@ menuconfig:
 # Building
 
 .PHONY: build
-build: check-sdk submodules icons
+build: check-sdk submodules
 	source "$(IDF_SOURCE)" >/dev/null && idf.py $(IDF_PARAMS) build
 
 .PHONY: reconfigure
@@ -124,7 +124,7 @@ install: build install-metadata
 	cd badgelink/tools; ./badgelink.sh appfs upload $(APP_SLUG) "$(APP_TITLE)" $(APP_REVISION) ../../$(BUILD)/application.bin
 
 .PHONY: install-metadata
-install-metadata: icons
+install-metadata:
 	cd badgelink/tools; \
 	./badgelink.sh fs mkdir $(APP_DIR) || true; \
 	./badgelink.sh fs upload $(APP_DIR)/metadata.json ../../metadata/metadata.json; \
@@ -136,12 +136,16 @@ install-metadata: icons
 run:
 	cd badgelink/tools; ./badgelink.sh start $(APP_SLUG)
 
-# Icons: rasterised from metadata/icon.svg, checked in so a plain clone builds
+# Icons: rasterised from metadata/icon.svg. The PNGs are checked in, and this
+# is not part of the build: git does not preserve modification times, so on a
+# fresh clone make cannot tell whether the SVG is newer than the PNGs, and it
+# would reach for an SVG renderer that a build container has no reason to have.
+# Run it by hand after editing the icon.
 .PHONY: icons
-icons: metadata/icon16.png metadata/icon32.png metadata/icon64.png
-
-metadata/icon%.png: metadata/icon.svg tools/render_icon.sh
-	tools/render_icon.sh $< $@ $*
+icons:
+	tools/render_icon.sh metadata/icon.svg metadata/icon16.png 16
+	tools/render_icon.sh metadata/icon.svg metadata/icon32.png 32
+	tools/render_icon.sh metadata/icon.svg metadata/icon64.png 64
 
 # Formatting
 
