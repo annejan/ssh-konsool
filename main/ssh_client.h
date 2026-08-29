@@ -32,7 +32,16 @@ ssh_client_t* ssh_client_create(term_t* term, SemaphoreHandle_t term_lock);
 void          ssh_client_destroy(ssh_client_t* client);
 
 esp_err_t ssh_client_connect(ssh_client_t* client, host_profile_t const* profile);
-void      ssh_client_disconnect(ssh_client_t* client);
+
+// Log in the same way, but instead of a shell, append the badge's public key to
+// the account's authorized_keys and hang up. Appending twice is harmless.
+esp_err_t ssh_client_copy_id(ssh_client_t* client, host_profile_t const* profile);
+
+// True when the last ssh_client_copy_id() run actually installed or found the
+// key. Valid once the session has closed.
+bool ssh_client_copy_id_succeeded(ssh_client_t const* client);
+
+void ssh_client_disconnect(ssh_client_t* client);
 
 ssh_state_t ssh_client_state(ssh_client_t const* client);
 

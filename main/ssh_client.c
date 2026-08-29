@@ -26,11 +26,20 @@ static char const TAG[] = "ssh";
 #define CONNECT_TIMEOUT_MS 15000
 #define TASK_STACK         16384
 
+// What the session is for. Both kinds share the connect, host key and
+// authentication path; only what happens afterwards differs.
+typedef enum {
+    SSH_JOB_SHELL = 0,
+    SSH_JOB_COPY_ID,
+} ssh_job_t;
+
 struct ssh_client {
     term_t*           term;
     SemaphoreHandle_t term_lock;
 
     host_profile_t profile;
+    ssh_job_t      job;
+    volatile bool  copy_id_ok;
 
     volatile ssh_state_t state;
     char                 status[128];
@@ -87,6 +96,27 @@ static void term_message(ssh_client_t* client, char const* format, ...) {
     }
     strcat(line, "\r\n");
     term_feed(client, line, strlen(line));
+}
+
+// Output from a command run without a terminal arrives with bare line feeds,
+// where a shell on a pty would have sent carriage returns too. Without this the
+// remote's messages walk down the screen in steps.
+static void term_feed_lines(ssh_client_t* client, char const* data, size_t len) {
+    char   buffer[128];
+    size_t used = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (used + 2 > sizeof(buffer)) {
+            term_feed(client, buffer, used);
+            used = 0;
+        }
+        if (data[i] == '\n') {
+            buffer[used++] = '\r';
+        }
+        buffer[used++] = data[i];
+    }
+    if (used) {
+        term_feed(client, buffer, used);
+    }
 }
 
 static char const* last_error(LIBSSH2_SESSION* session) {
@@ -351,6 +381,91 @@ static bool open_shell(ssh_client_t* client) {
 }
 
 // ---------------------------------------------------------------------------
+// Installing the badge key
+// ---------------------------------------------------------------------------
+
+// What ssh-copy-id does, with the key arriving on standard input. Wrapped in
+// "sh -c" because the account's login shell may not be Bourne compatible, and
+// written without a single quote anywhere so the wrapping needs no escaping.
+static char const COPY_ID_COMMAND[] =
+    "exec sh -c '"
+    "cd; umask 077; mkdir -p .ssh || exit 1; "
+    "key=$(cat); "
+    "touch .ssh/authorized_keys || exit 1; "
+    "chmod u+rw,go-rwx .ssh/authorized_keys; "
+    "if grep -qxF \"$key\" .ssh/authorized_keys 2>/dev/null; then "
+    "echo \"Key was already installed.\"; "
+    "else "
+    "[ -z \"$(tail -c 1 .ssh/authorized_keys 2>/dev/null)\" ] || echo >> .ssh/authorized_keys; "
+    "printf \"%s\\n\" \"$key\" >> .ssh/authorized_keys || exit 1; "
+    "echo \"Key installed.\"; "
+    "fi; "
+    "command -v restorecon >/dev/null 2>&1 && restorecon -F .ssh .ssh/authorized_keys 2>/dev/null; "
+    "exit 0'";
+
+static bool write_all(ssh_client_t* client, char const* data, size_t len) {
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t written = libssh2_channel_write(client->channel, data + sent, len - sent);
+        if (written <= 0) {
+            return false;
+        }
+        sent += (size_t)written;
+    }
+    return true;
+}
+
+static bool run_copy_id(ssh_client_t* client) {
+    char const* public_key = keystore_public_key();
+    if (!public_key) {
+        set_status(client, SSH_STATE_ERROR, "The badge has no key to install");
+        return false;
+    }
+
+    client->channel = libssh2_channel_open_session(client->session);
+    if (!client->channel) {
+        set_status(client, SSH_STATE_ERROR, "Cannot open a channel: %s", last_error(client->session));
+        return false;
+    }
+
+    if (libssh2_channel_exec(client->channel, COPY_ID_COMMAND)) {
+        set_status(client, SSH_STATE_ERROR, "Server refused the command: %s", last_error(client->session));
+        return false;
+    }
+
+    if (!write_all(client, public_key, strlen(public_key)) || !write_all(client, "\n", 1)) {
+        set_status(client, SSH_STATE_ERROR, "Could not send the key: %s", last_error(client->session));
+        return false;
+    }
+    // The remote side reads until end of file, so our half has to close.
+    libssh2_channel_send_eof(client->channel);
+
+    char    buffer[256];
+    ssize_t read;
+    while ((read = libssh2_channel_read(client->channel, buffer, sizeof(buffer))) > 0) {
+        term_feed_lines(client, buffer, (size_t)read);
+    }
+    while ((read = libssh2_channel_read_stderr(client->channel, buffer, sizeof(buffer))) > 0) {
+        term_feed_lines(client, buffer, (size_t)read);
+    }
+
+    libssh2_channel_wait_eof(client->channel);
+    libssh2_channel_close(client->channel);
+    libssh2_channel_wait_closed(client->channel);
+
+    int exit_status = libssh2_channel_get_exit_status(client->channel);
+    if (exit_status != 0) {
+        set_status(client, SSH_STATE_ERROR, "The server rejected the key (exit %d)", exit_status);
+        return false;
+    }
+
+    client->copy_id_ok = true;
+    set_status(client, SSH_STATE_CLOSED, "Key installed on %s", client->profile.host);
+    term_message(client, "Done. This connection will use the badge key from now on.");
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Session task
 // ---------------------------------------------------------------------------
 
@@ -446,6 +561,11 @@ static void session_task(void* argument) {
         goto done;
     }
 
+    if (client->job == SSH_JOB_COPY_ID) {
+        run_copy_id(client);
+        goto done;
+    }
+
     if (!open_shell(client)) {
         goto done;
     }
@@ -524,12 +644,14 @@ void ssh_client_destroy(ssh_client_t* client) {
     free(client);
 }
 
-esp_err_t ssh_client_connect(ssh_client_t* client, host_profile_t const* profile) {
+static esp_err_t start_session(ssh_client_t* client, host_profile_t const* profile, ssh_job_t job) {
     if (client->task) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    client->profile = *profile;
+    client->job        = job;
+    client->copy_id_ok = false;
+    client->profile    = *profile;
     if (client->profile.port == 0) {
         client->profile.port = 22;
     }
@@ -547,6 +669,21 @@ esp_err_t ssh_client_connect(ssh_client_t* client, host_profile_t const* profile
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+
+esp_err_t ssh_client_connect(ssh_client_t* client, host_profile_t const* profile) {
+    return start_session(client, profile, SSH_JOB_SHELL);
+}
+
+esp_err_t ssh_client_copy_id(ssh_client_t* client, host_profile_t const* profile) {
+    // The key is what we are here to install, so do not let it gate the login.
+    host_profile_t with_password = *profile;
+    with_password.use_key        = false;
+    return start_session(client, &with_password, SSH_JOB_COPY_ID);
+}
+
+bool ssh_client_copy_id_succeeded(ssh_client_t const* client) {
+    return client->copy_id_ok;
 }
 
 void ssh_client_disconnect(ssh_client_t* client) {

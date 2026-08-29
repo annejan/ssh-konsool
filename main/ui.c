@@ -89,6 +89,9 @@ static struct {
     int64_t       cursor_toggled_us;
     ssh_state_t   last_state;
 
+    // The saved connection a key install is running for, or -1
+    int copy_id_index;
+
     // Modal password entry inside the terminal screen
     bool modal_password;
     char modal_buffer[HOST_PASSWORD_MAX];
@@ -236,7 +239,7 @@ static void draw_menu(void) {
     }
 
     char status[128];
-    snprintf(status, sizeof(status), "%s   enter: open   F2: edit   F3: delete", app.network);
+    snprintf(status, sizeof(status), "%s   enter: open   F2: edit   F3: delete   F4: install badge key", app.network);
     draw_footer(status);
     draw_toast();
 }
@@ -298,7 +301,7 @@ static void draw_edit(void) {
                       "The badge key has to be in the server's authorized_keys; see the SSH key page.");
     }
 
-    draw_footer("enter: connect   F2: save   F3: delete   esc: back   space: toggle");
+    draw_footer("enter: connect   F2: save   F3: delete   F4: install badge key   esc: back   space: toggle");
     draw_toast();
 }
 
@@ -474,9 +477,14 @@ static void draw_terminal(void) {
 // Actions
 // ---------------------------------------------------------------------------
 
-static void start_connection(host_profile_t const* profile) {
+// Both the shell and the key install run on the terminal screen, so the host
+// key and password prompts work the same way for either.
+static void open_terminal_screen(void) {
     xSemaphoreTake(app.term_lock, portMAX_DELAY);
     term_resize(app.term, app.render.cols, app.render.rows);
+    // A full reset, so the previous session's output is not mistaken for this
+    // one's.
+    term_write(app.term, "\033c", 2);
     xSemaphoreGive(app.term_lock);
 
     app.screen            = SCREEN_TERMINAL;
@@ -484,8 +492,31 @@ static void start_connection(host_profile_t const* profile) {
     app.modal_password    = false;
     app.modal_buffer[0]   = '\0';
     app.last_state        = SSH_STATE_IDLE;
+}
 
+static void start_connection(host_profile_t const* profile) {
+    app.copy_id_index = -1;
+    open_terminal_screen();
     if (ssh_client_connect(app.ssh, profile) != ESP_OK) {
+        toast("Cannot start the session");
+    }
+}
+
+// Log in with the password once and leave the badge key behind, so every login
+// after this one can use the key.
+static void start_copy_id(int index) {
+    host_profile_t profile;
+    if (!hosts_get(index, &profile)) {
+        return;
+    }
+    if (!keystore_public_key()) {
+        toast("The badge has no key to install");
+        return;
+    }
+    app.copy_id_index = index;
+    open_terminal_screen();
+    if (ssh_client_copy_id(app.ssh, &profile) != ESP_OK) {
+        app.copy_id_index = -1;
         toast("Cannot start the session");
     }
 }
@@ -566,6 +597,11 @@ static bool handle_menu(bsp_input_event_t const* event) {
         case BSP_INPUT_NAVIGATION_KEY_F2:
             if (app.menu_index < hosts_count()) {
                 open_editor(app.menu_index);
+            }
+            return true;
+        case BSP_INPUT_NAVIGATION_KEY_F4:
+            if (app.menu_index < hosts_count()) {
+                start_copy_id(app.menu_index);
             }
             return true;
         case BSP_INPUT_NAVIGATION_KEY_F3:
@@ -794,13 +830,14 @@ static bool handle_terminal(bsp_input_event_t const* event) {
 
 esp_err_t ui_init(pax_buf_t* fb, term_t* term, SemaphoreHandle_t term_lock, ssh_client_t* ssh) {
     memset(&app, 0, sizeof(app));
-    app.fb         = fb;
-    app.term       = term;
-    app.term_lock  = term_lock;
-    app.ssh        = ssh;
-    app.screen     = SCREEN_MENU;
-    app.font_scale = 1;
-    app.cursor_on  = true;
+    app.fb            = fb;
+    app.term          = term;
+    app.term_lock     = term_lock;
+    app.ssh           = ssh;
+    app.screen        = SCREEN_MENU;
+    app.copy_id_index = -1;
+    app.font_scale    = 1;
+    app.cursor_on     = true;
     strlcpy(app.network, "no network", sizeof(app.network));
 
     term_render_configure(&app.render, fb, app.font_scale, TERM_STATUS_BAR_HEIGHT);

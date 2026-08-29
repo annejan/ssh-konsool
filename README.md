@@ -30,7 +30,13 @@ Open **SSH key** from the main menu. The page shows the fingerprint, the
 | F3  | Print the line on the serial console          |
 | F4  | Replace the key (twice to confirm)            |
 
-Pulling it off with BadgeLink:
+Or let the badge install it for you, which is the easy way: fill in the host,
+user and password, then press **F4** on the connection (in the list or in the
+editor). It logs in with the password once, appends the key to the account's
+`authorized_keys`, and switches that connection over to key authentication. From
+then on the password is not needed.
+
+Pulling the key off by hand instead, with BadgeLink:
 
     badgelink.sh fs download /int/ssh/id_ed25519.pub id_badge.pub
     ssh-copy-id -f -i id_badge.pub user@host
