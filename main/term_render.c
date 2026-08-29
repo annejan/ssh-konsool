@@ -120,7 +120,6 @@ static void draw_row(term_render_t* render, term_t* term, int row) {
 }
 
 void term_render_draw(term_render_t* render, term_t* term, bool force) {
-    static int last_cursor_col = -1;
     static int last_cursor_row = -1;
 
     int cursor_col = 0;
@@ -152,7 +151,6 @@ void term_render_draw(term_render_t* render, term_t* term, bool force) {
         pax_draw_text(render->fb, bg, render->font, render->font_size, x, y, text);
     }
 
-    last_cursor_col = cursor_col;
     last_cursor_row = cursor_row;
     term_clear_dirty(term);
 }

@@ -70,6 +70,10 @@ Needs ESP-IDF v6.0.2.
 Point the build at an existing SDK by writing its path to `.IDF_PATH`, or set
 `IDF_PATH` in the environment.
 
+The parts that can be tested without hardware are:
+
+    make test
+
 Install over BadgeLink, which also uploads the icon and metadata:
 
     make badgelink        # once, to fetch the tool
@@ -111,6 +115,7 @@ generated itself.
     main/hosts.c           Saved connections and known host keys
     main/ui.c              Menu, editor, key page, terminal screen
     components/libssh2/    libssh2 plus the PSA crypto backend
+    test/host/             tests that run on a development machine
 
 ## Licence
 

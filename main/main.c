@@ -153,7 +153,7 @@ static void connect_network(void) {
 // The terminal answers some escape sequences itself; those replies go back up
 // the same channel as typed input.
 static void terminal_response(void const* data, size_t len, void* ctx) {
-    ssh_client_send((ssh_client_t*)ctx, data, len);
+    ssh_client_queue_reply((ssh_client_t*)ctx, data, len);
 }
 
 void app_main(void) {

@@ -529,8 +529,28 @@ int _libssh2_rsa_new(libssh2_rsa_ctx **rsa,
     }
     free(der);
 
-    ctx->bits = nlen * 8;
-    *rsa      = ctx;
+    /* Ask the key itself rather than measuring the bytes the peer sent, then
+       refuse anything below what OpenSSH accepts. Neither PSA nor libssh2
+       imposes a floor on an imported key, so a server could otherwise offer a
+       modulus small enough to factor and have its signatures believed. */
+    {
+        psa_key_attributes_t imported = PSA_KEY_ATTRIBUTES_INIT;
+        if(psa_get_key_attributes(ctx->key, &imported) != PSA_SUCCESS) {
+            psa_destroy_key(ctx->key);
+            free(ctx);
+            return -1;
+        }
+        ctx->bits = psa_get_key_bits(&imported);
+        psa_reset_key_attributes(&imported);
+
+        if(ctx->bits < LIBSSH2_PSA_RSA_MIN_BITS) {
+            psa_destroy_key(ctx->key);
+            free(ctx);
+            return -1;
+        }
+    }
+
+    *rsa = ctx;
     return 0;
 }
 
@@ -936,12 +956,24 @@ int _libssh2_curve25519_gen_k(_libssh2_bn **k,
                               uint8_t server_public_key[LIBSSH2_ED25519_KEY_LEN])
 {
     uint8_t secret[LIBSSH2_ED25519_KEY_LEN];
+    uint8_t seen = 0;
+    size_t  i;
 
     if(!k || !*k)
         return -1;
 
-    if(crypto_scalarmult(secret, private_key, server_public_key) != 0)
+    /* TweetNaCl's crypto_scalarmult always returns 0 and does no contributory
+       behaviour check, so the result has to be inspected here. RFC 8731 section
+       3 requires aborting on an all-zero shared secret, which is what a peer
+       sending a low order point produces. */
+    crypto_scalarmult(secret, private_key, server_public_key);
+
+    for(i = 0; i < sizeof(secret); i++)
+        seen |= secret[i];
+    if(seen == 0) {
+        _libssh2_explicit_zero(secret, sizeof(secret));
         return -1;
+    }
 
     if(_libssh2_psa_bn_from_bin(*k, sizeof(secret), secret)) {
         _libssh2_explicit_zero(secret, sizeof(secret));

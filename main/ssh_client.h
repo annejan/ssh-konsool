@@ -56,8 +56,13 @@ bool        ssh_client_host_changed(ssh_client_t const* client);
 void ssh_client_accept_host(ssh_client_t* client, bool accept, bool remember);
 void ssh_client_provide_password(ssh_client_t* client, char const* password);
 
-// Bytes typed by the user, on their way to the remote shell.
+// Bytes typed by the user, on their way to the remote shell. Call from the UI
+// task only: the stream buffer behind it allows a single writer.
 void ssh_client_send(ssh_client_t* client, void const* data, size_t len);
+
+// A reply the terminal owes the host, such as a cursor position report. Only
+// valid from inside the terminal's own callbacks, which run on the session task.
+void ssh_client_queue_reply(ssh_client_t* client, void const* data, size_t len);
 
 // Tell the remote side the window changed size.
 void ssh_client_resize(ssh_client_t* client, int cols, int rows);

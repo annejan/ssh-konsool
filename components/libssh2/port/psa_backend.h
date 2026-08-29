@@ -62,6 +62,10 @@
 /* Room for an uncompressed point on the largest curve libssh2 knows (P-521) */
 #define EC_MAX_POINT_LEN ((528 * 2 / 8) + 1)
 
+/* The smallest RSA modulus this backend will verify against, matching OpenSSH's
+   SSH_RSA_MINIMUM_MODULUS_SIZE. */
+#define LIBSSH2_PSA_RSA_MIN_BITS 1024
+
 /*******************************************************************/
 /* Generic                                                         */
 

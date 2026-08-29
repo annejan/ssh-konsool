@@ -42,6 +42,14 @@ jobs:
           name: ssh-${{ matrix.device }}
           path: build/${{ matrix.device }}/application.bin
 
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host tests
+        run: make test
+
   format:
     runs-on: ubuntu-latest
     steps:

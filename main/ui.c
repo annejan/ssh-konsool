@@ -12,6 +12,7 @@
 #include "hosts.h"
 #include "keymap.h"
 #include "keystore.h"
+#include "mbedtls/platform_util.h"
 #include "pax_fonts.h"
 #include "pax_text.h"
 #include "qrcode.h"
@@ -484,7 +485,7 @@ static void open_terminal_screen(void) {
     term_resize(app.term, app.render.cols, app.render.rows);
     // A full reset, so the previous session's output is not mistaken for this
     // one's.
-    term_write(app.term, "\033c", 2);
+    term_reset(app.term);
     xSemaphoreGive(app.term_lock);
 
     app.screen            = SCREEN_TERMINAL;
@@ -519,6 +520,7 @@ static void start_copy_id(int index) {
         app.copy_id_index = -1;
         toast("Cannot start the session");
     }
+    mbedtls_platform_zeroize(&profile, sizeof(profile));
 }
 
 static void open_editor(int index) {
@@ -585,6 +587,7 @@ static bool handle_menu(bsp_input_event_t const* event) {
                 if (hosts_get(app.menu_index, &profile)) {
                     start_connection(&profile);
                 }
+                mbedtls_platform_zeroize(&profile, sizeof(profile));
             } else if (app.menu_index == hosts_count()) {
                 open_editor(-1);
             } else if (app.menu_index == hosts_count() + 1) {
@@ -632,6 +635,9 @@ static bool handle_edit(bsp_input_event_t const* event) {
                 app.edit_field = (app.edit_field + 1) % EDIT_FIELD_COUNT;
                 return true;
             case BSP_INPUT_NAVIGATION_KEY_ESC:
+                // The draft outlives the screen, so the typed password would
+                // otherwise sit in memory until the editor is opened again.
+                mbedtls_platform_zeroize(app.draft.password, sizeof(app.draft.password));
                 app.screen = SCREEN_MENU;
                 return true;
             case BSP_INPUT_NAVIGATION_KEY_F2:
@@ -652,6 +658,7 @@ static bool handle_edit(bsp_input_event_t const* event) {
                 host_profile_t profile = app.draft;
                 profile.port           = (uint16_t)atoi(app.port_text);
                 start_connection(&profile);
+                mbedtls_platform_zeroize(&profile, sizeof(profile));
                 return true;
             }
             case BSP_INPUT_NAVIGATION_KEY_SPACE_L:
@@ -745,11 +752,11 @@ static bool handle_terminal(bsp_input_event_t const* event) {
         if (event->type == INPUT_EVENT_TYPE_NAVIGATION && event->args_navigation.state) {
             if (event->args_navigation.key == BSP_INPUT_NAVIGATION_KEY_RETURN) {
                 ssh_client_provide_password(app.ssh, app.modal_buffer);
-                memset(app.modal_buffer, 0, sizeof(app.modal_buffer));
+                mbedtls_platform_zeroize(app.modal_buffer, sizeof(app.modal_buffer));
                 return true;
             }
             if (event->args_navigation.key == BSP_INPUT_NAVIGATION_KEY_ESC) {
-                memset(app.modal_buffer, 0, sizeof(app.modal_buffer));
+                mbedtls_platform_zeroize(app.modal_buffer, sizeof(app.modal_buffer));
                 ssh_client_disconnect(app.ssh);
                 return true;
             }

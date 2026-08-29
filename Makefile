@@ -147,6 +147,12 @@ icons:
 	tools/render_icon.sh metadata/icon.svg metadata/icon32.png 32
 	tools/render_icon.sh metadata/icon.svg metadata/icon64.png 64
 
+# Tests that run here rather than on the badge
+
+.PHONY: test
+test:
+	$(MAKE) -C test/host run
+
 # Formatting
 
 .PHONY: format

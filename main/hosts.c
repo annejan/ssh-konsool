@@ -3,16 +3,27 @@
 #include "hosts.h"
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include "esp_log.h"
+#include "mbedtls/platform_util.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "psa/crypto.h"
 
 static char const TAG[] = "hosts";
 
 #define NVS_NAMESPACE "sshhosts"
 #define NVS_KEY_LIST  "list"
-#define NVS_KNOWN_NS  "sshknown"
+// Bumped from "sshknown" when the key derivation below changed: entries written
+// under the old 32-bit scheme cannot be checked after the fact, so they are left
+// behind rather than trusted.
+#define NVS_KNOWN_NS  "sshknown2"
+
+// A record is "host:port\nSHA256:...". The host travels with the fingerprint so
+// that an entry can never be passed off as belonging to somewhere else.
+#define KNOWN_RECORD_MAX (HOST_NAME_MAX + 8 + 80)
 
 static host_profile_t profiles[HOSTS_MAX];
 static int            profile_count = 0;
@@ -91,41 +102,119 @@ esp_err_t hosts_remove(int index) {
     return save_all();
 }
 
-// NVS keys are limited to 15 characters, so the host:port pair is hashed rather
-// than spelled out.
+// NVS key names are limited to 15 characters, so the host and port are hashed
+// rather than spelled out. The digest has to be cryptographic: with a
+// non-collision-resistant hash an attacker can pick a host name that lands on
+// the same entry as somewhere you trust, and have you pin their key under it.
 static void known_key(char const* host, uint16_t port, char* out, size_t len) {
-    uint32_t hash = 2166136261u;
-    for (char const* c = host; *c; c++) {
-        hash = (hash ^ (uint8_t)*c) * 16777619u;
+    // Length delimited, so host "a" on port 2258 cannot collide with host
+    // "a:22" on port 58.
+    uint8_t input[HOST_NAME_MAX + 3];
+    size_t  host_len = strnlen(host, HOST_NAME_MAX - 1);
+    memcpy(input, host, host_len);
+    input[host_len]     = '\0';
+    input[host_len + 1] = (uint8_t)(port >> 8);
+    input[host_len + 2] = (uint8_t)port;
+
+    uint8_t digest[32];
+    size_t  digest_len = 0;
+    if (psa_hash_compute(PSA_ALG_SHA_256, input, host_len + 3, digest, sizeof(digest), &digest_len) != PSA_SUCCESS) {
+        // Without a digest there is no safe key to use, so use one that cannot
+        // collide with a real entry and will simply never match.
+        snprintf(out, len, "h!");
+        return;
     }
-    hash = (hash ^ port) * 16777619u;
-    snprintf(out, len, "h%08" PRIx32, hash);
+
+    // Seven bytes of digest is fourteen hex characters, which with the prefix
+    // is exactly the fifteen an NVS key name allows.
+    snprintf(out, len, "h%02x%02x%02x%02x%02x%02x%02x", digest[0], digest[1], digest[2], digest[3], digest[4],
+             digest[5], digest[6]);
+}
+
+// Records are "host:port\nfingerprint". Returns false unless the record really
+// belongs to this host and port.
+static bool parse_record(char const* record, char const* host, uint16_t port, char* out_fingerprint, size_t len) {
+    char const* newline = strchr(record, '\n');
+    if (!newline) {
+        return false;
+    }
+
+    // The last colon on the first line: the host may be a bare IPv6 address, and
+    // the fingerprint on the second line contains a colon of its own.
+    char const* colon = NULL;
+    for (char const* p = record; p < newline; p++) {
+        if (*p == ':') {
+            colon = p;
+        }
+    }
+    if (!colon) {
+        return false;
+    }
+
+    size_t stored_host_len = (size_t)(colon - record);
+    if (stored_host_len != strlen(host) || strncasecmp(record, host, stored_host_len) != 0) {
+        return false;
+    }
+    if ((uint16_t)atoi(colon + 1) != port) {
+        return false;
+    }
+
+    strlcpy(out_fingerprint, newline + 1, len);
+    return true;
 }
 
 bool knownhost_get(char const* host, uint16_t port, char* out_fingerprint, size_t len) {
-    char key[16];
+    char key[NVS_KEY_NAME_MAX_SIZE];
     known_key(host, port, key, sizeof(key));
 
     nvs_handle_t handle;
     if (nvs_open(NVS_KNOWN_NS, NVS_READONLY, &handle) != ESP_OK) {
         return false;
     }
-    size_t    size = len;
-    esp_err_t err  = nvs_get_str(handle, key, out_fingerprint, &size);
+    // The record holds more than the fingerprint, so it cannot be read straight
+    // into the caller's buffer.
+    char      record[KNOWN_RECORD_MAX];
+    size_t    size = sizeof(record);
+    esp_err_t err  = nvs_get_str(handle, key, record, &size);
     nvs_close(handle);
-    return err == ESP_OK;
+
+    if (err != ESP_OK) {
+        return false;
+    }
+    return parse_record(record, host, port, out_fingerprint, len);
 }
 
 esp_err_t knownhost_set(char const* host, uint16_t port, char const* fingerprint) {
-    char key[16];
+    char key[NVS_KEY_NAME_MAX_SIZE];
     known_key(host, port, key, sizeof(key));
+
+    char record[KNOWN_RECORD_MAX];
+    if (snprintf(record, sizeof(record), "%s:%u\n%s", host, (unsigned)port, fingerprint) >= (int)sizeof(record)) {
+        return ESP_ERR_INVALID_ARG;
+    }
 
     nvs_handle_t handle;
     esp_err_t    err = nvs_open(NVS_KNOWN_NS, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         return err;
     }
-    err = nvs_set_str(handle, key, fingerprint);
+
+    // Refuse to overwrite an entry belonging to a different host. At this key
+    // width that should be unreachable, but silently unpinning somewhere else
+    // is not a failure mode worth leaving open.
+    char   existing[KNOWN_RECORD_MAX];
+    size_t size = sizeof(existing);
+    if (nvs_get_str(handle, key, existing, &size) == ESP_OK) {
+        char scratch[80];
+        if (!parse_record(existing, host, port, scratch, sizeof(scratch))) {
+            nvs_close(handle);
+            ESP_LOGE(TAG, "Refusing to replace the remembered key of another host");
+            return ESP_ERR_INVALID_STATE;
+        }
+        mbedtls_platform_zeroize(scratch, sizeof(scratch));
+    }
+
+    err = nvs_set_str(handle, key, record);
     if (err == ESP_OK) {
         err = nvs_commit(handle);
     }

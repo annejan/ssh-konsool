@@ -524,7 +524,13 @@ static void handle_csi(term_t* t, char final) {
             break;
         }
         case 'I': {  // CHT: forward tab stops
-            for (int n = param(t, 0, 1); n > 0; n--) {
+            // Each useful step moves the cursor at least one column, so more
+            // repeats than there are columns cannot do anything except burn
+            // time on a hostile sequence.
+            int n = param(t, 0, 1);
+            if (n < 1) n = 1;
+            if (n > t->cols) n = t->cols;
+            for (; n > 0; n--) {
                 int x = t->cx + 1;
                 while (x < t->cols - 1 && !t->tabstop[x]) x++;
                 move_to(t, x, t->cy);
@@ -595,7 +601,10 @@ static void handle_csi(term_t* t, char final) {
             break;
         }
         case 'Z': {  // CBT: backward tab stops
-            for (int n = param(t, 0, 1); n > 0; n--) {
+            int n = param(t, 0, 1);
+            if (n < 1) n = 1;
+            if (n > t->cols) n = t->cols;
+            for (; n > 0; n--) {
                 int x = t->cx - 1;
                 while (x > 0 && !t->tabstop[x]) x--;
                 move_to(t, x, t->cy);
@@ -688,26 +697,44 @@ static void handle_esc(term_t* t, char final) {
         case '>':
             t->app_keypad = false;
             break;
-        case 'c':  // RIS: full reset
-            t->fg              = DEFAULT_FG;
-            t->bg              = DEFAULT_BG;
-            t->attr            = 0;
-            t->top             = 0;
-            t->bot             = t->rows - 1;
-            t->autowrap        = true;
-            t->origin_mode     = false;
-            t->app_cursor      = false;
-            t->insert_mode     = false;
-            t->cursor_visible  = true;
-            t->bracketed_paste = false;
-            switch_screen(t, false);
-            clear_rows(t, 0, t->rows - 1);
-            reset_tabstops(t);
-            move_to(t, 0, 0);
-            break;
+        case 'c':
+            term_reset(t);
+            break;  // RIS
         default:
             break;
     }
+}
+
+void term_reset(term_t* t) {
+    t->fg              = DEFAULT_FG;
+    t->bg              = DEFAULT_BG;
+    t->attr            = 0;
+    t->top             = 0;
+    t->bot             = t->rows - 1;
+    t->autowrap        = true;
+    t->origin_mode     = false;
+    t->app_cursor      = false;
+    t->insert_mode     = false;
+    t->cursor_visible  = true;
+    t->bracketed_paste = false;
+    switch_screen(t, false);
+    clear_rows(t, 0, t->rows - 1);
+    reset_tabstops(t);
+    move_to(t, 0, 0);
+
+    // A session can die part way through an escape sequence, so the parser has
+    // to be put back on the ground as well as the screen. Otherwise the next
+    // session's opening bytes are read as parameters of a dead sequence, or
+    // swallowed into an unterminated string.
+    t->state         = ST_GROUND;
+    t->utf_left      = 0;
+    t->nparams       = 0;
+    t->param_pending = false;
+    t->priv          = 0;
+    t->intermediate  = 0;
+    t->osc_len       = 0;
+    t->view_offset   = 0;
+    mark_all_rows(t);
 }
 
 static void handle_osc(term_t* t) {

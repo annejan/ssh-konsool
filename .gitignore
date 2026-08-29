@@ -13,3 +13,6 @@ badgelink/
 # Machine local SDK paths
 .IDF_PATH
 .IDF_TOOLS_PATH
+
+# Host test binaries
+test/host/test_hosts

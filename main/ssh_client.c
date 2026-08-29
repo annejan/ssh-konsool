@@ -18,12 +18,18 @@
 #include "keystore.h"
 #include "libssh2.h"
 #include "mbedtls/base64.h"
+#include "mbedtls/platform_util.h"
 
 static char const TAG[] = "ssh";
 
 #define OUTGOING_BUFFER    4096
 #define READ_CHUNK         2048
 #define CONNECT_TIMEOUT_MS 15000
+// How long the remote side may refuse to accept a byte before we give up on it.
+#define WRITE_STALL_MS     10000
+// A key install prints a line or two; anything beyond this is the server being
+// hostile rather than chatty.
+#define COPY_ID_OUTPUT_MAX 8192
 #define TASK_STACK         16384
 
 // What the session is for. Both kinds share the connect, host key and
@@ -51,9 +57,17 @@ struct ssh_client {
 
     volatile bool stop;
     volatile bool answer_ready;
-    bool          host_accepted;
-    bool          host_remember;
+    // Written by the UI task, read by the session task.
+    volatile bool host_accepted;
+    volatile bool host_remember;
     char          password[HOST_PASSWORD_MAX];
+
+    // Replies the terminal owes the host (cursor reports and the like). They
+    // are produced on the session task inside term_feed, so they get their own
+    // buffer instead of sharing the UI task's stream buffer, which allows only
+    // one writer.
+    char   reply[128];
+    size_t reply_len;
 
     volatile bool resize_pending;
     volatile int  pending_cols;
@@ -209,13 +223,12 @@ static int open_socket(ssh_client_t* client) {
 // Wait for the user to answer a prompt, or for the session to be cancelled.
 static bool wait_for_answer(ssh_client_t* client) {
     client->answer_ready = false;
-    while (!client->answer_ready) {
-        if (client->stop) {
-            return false;
-        }
+    while (!client->answer_ready && !client->stop) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
-    return true;
+    // Disconnecting releases this wait too, and that is a cancellation, not an
+    // answer. Only a real reply from the user counts.
+    return client->answer_ready && !client->stop;
 }
 
 static bool verify_host_key(ssh_client_t* client) {
@@ -345,6 +358,9 @@ static bool authenticate(ssh_client_t* client) {
             if (try_password(client)) {
                 return true;
             }
+            if (client->stop) {
+                return false;  // Cancelled at the prompt, not a rejected password
+            }
             term_message(client, "Login failed.");
         }
     }
@@ -403,14 +419,34 @@ static char const COPY_ID_COMMAND[] =
     "command -v restorecon >/dev/null 2>&1 && restorecon -F .ssh .ssh/authorized_keys 2>/dev/null; "
     "exit 0'";
 
+// Write the lot, giving up if the session is cancelled or the remote side stops
+// accepting bytes altogether. A slow but live peer resets the deadline on every
+// byte it takes, so only a genuinely stalled one is dropped.
 static bool write_all(ssh_client_t* client, char const* data, size_t len) {
-    size_t sent = 0;
+    size_t     sent     = 0;
+    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(WRITE_STALL_MS);
+
     while (sent < len) {
-        ssize_t written = libssh2_channel_write(client->channel, data + sent, len - sent);
-        if (written <= 0) {
+        if (client->stop) {
             return false;
         }
-        sent += (size_t)written;
+        ssize_t written = libssh2_channel_write(client->channel, data + sent, len - sent);
+        if (written == LIBSSH2_ERROR_EAGAIN || written == 0) {
+            if ((int32_t)(xTaskGetTickCount() - deadline) >= 0) {
+                set_status(client, SSH_STATE_ERROR, "The remote host stopped accepting input");
+                return false;
+            }
+            // At 100 Hz pdMS_TO_TICKS(5) rounds to nothing, which would turn
+            // this into a busy wait, so never yield for less than a tick.
+            vTaskDelay(1);
+            continue;
+        }
+        if (written < 0) {
+            set_status(client, SSH_STATE_ERROR, "Write failed: %s", last_error(client->session));
+            return false;
+        }
+        sent     += (size_t)written;
+        deadline  = xTaskGetTickCount() + pdMS_TO_TICKS(WRITE_STALL_MS);
     }
     return true;
 }
@@ -434,21 +470,41 @@ static bool run_copy_id(ssh_client_t* client) {
     }
 
     if (!write_all(client, public_key, strlen(public_key)) || !write_all(client, "\n", 1)) {
-        set_status(client, SSH_STATE_ERROR, "Could not send the key: %s", last_error(client->session));
+        if (client->state != SSH_STATE_ERROR) {
+            set_status(client, SSH_STATE_ERROR, "Could not send the key: %s", last_error(client->session));
+        }
         return false;
     }
     // The remote side reads until end of file, so our half has to close.
     libssh2_channel_send_eof(client->channel);
 
+    // The session is still in blocking mode here, so a server that keeps
+    // talking would otherwise hold this task for as long as it likes.
     char    buffer[256];
     ssize_t read;
-    while ((read = libssh2_channel_read(client->channel, buffer, sizeof(buffer))) > 0) {
+    size_t  total = 0;
+    while (!client->stop && total < COPY_ID_OUTPUT_MAX &&
+           (read = libssh2_channel_read(client->channel, buffer, sizeof(buffer))) > 0) {
         term_feed_lines(client, buffer, (size_t)read);
+        total += (size_t)read;
     }
-    while ((read = libssh2_channel_read_stderr(client->channel, buffer, sizeof(buffer))) > 0) {
+    while (!client->stop && total < COPY_ID_OUTPUT_MAX &&
+           (read = libssh2_channel_read_stderr(client->channel, buffer, sizeof(buffer))) > 0) {
         term_feed_lines(client, buffer, (size_t)read);
+        total += (size_t)read;
     }
 
+    if (client->stop) {
+        set_status(client, SSH_STATE_CLOSED, "Cancelled");
+        return false;
+    }
+    if (total >= COPY_ID_OUTPUT_MAX) {
+        set_status(client, SSH_STATE_ERROR, "The server would not stop talking");
+        return false;
+    }
+
+    // Waiting for a polite close would resume consuming the stream, so it only
+    // happens once the peer has already gone quiet.
     libssh2_channel_wait_eof(client->channel);
     libssh2_channel_close(client->channel);
     libssh2_channel_wait_closed(client->channel);
@@ -480,20 +536,23 @@ static void pump(ssh_client_t* client) {
             libssh2_channel_request_pty_size(client->channel, client->pending_cols, client->pending_rows);
         }
 
-        size_t taken = xStreamBufferReceive(client->outgoing, buffer, sizeof(buffer), 0);
-        size_t sent  = 0;
-        while (sent < taken) {
-            ssize_t written = libssh2_channel_write(client->channel, (char const*)buffer + sent, taken - sent);
-            if (written == LIBSSH2_ERROR_EAGAIN) {
-                vTaskDelay(pdMS_TO_TICKS(5));
-                continue;
-            }
-            if (written < 0) {
-                set_status(client, SSH_STATE_ERROR, "Write failed: %s", last_error(client->session));
+        // Anything the terminal owed the host from the last read goes first, so
+        // a cursor report cannot be overtaken by later keystrokes.
+        if (client->reply_len) {
+            size_t owed       = client->reply_len;
+            client->reply_len = 0;
+            if (!write_all(client, client->reply, owed)) {
                 return;
             }
-            sent     += (size_t)written;
-            did_work  = true;
+            did_work = true;
+        }
+
+        size_t taken = xStreamBufferReceive(client->outgoing, buffer, sizeof(buffer), 0);
+        if (taken) {
+            if (!write_all(client, (char const*)buffer, taken)) {
+                return;
+            }
+            did_work = true;
         }
 
         ssize_t read = libssh2_channel_read(client->channel, (char*)buffer, sizeof(buffer));
@@ -581,7 +640,10 @@ done:
     if (client->state == SSH_STATE_ERROR) {
         term_message(client, "%s", client->status);
     } else if (client->state != SSH_STATE_CLOSED) {
-        client->state = SSH_STATE_CLOSED;
+        // Whatever the session was doing when it stopped, the status line has
+        // to stop describing it. Leaving "Password for ..." up after a cancel
+        // tells the user the session is still waiting on them.
+        set_status(client, SSH_STATE_CLOSED, client->stop ? "Cancelled" : "Disconnected");
     }
 
     if (client->channel) {
@@ -599,7 +661,9 @@ done:
     }
 
     // Never leave a password lying around after the session it belonged to.
-    memset(client->password, 0, sizeof(client->password));
+    // start_session copied the whole profile, so that copy holds one too.
+    mbedtls_platform_zeroize(client->password, sizeof(client->password));
+    mbedtls_platform_zeroize(client->profile.password, sizeof(client->profile.password));
 
     client->task = NULL;
     vTaskDelete(NULL);
@@ -641,6 +705,7 @@ void ssh_client_destroy(ssh_client_t* client) {
     }
     ssh_client_disconnect(client);
     vStreamBufferDelete(client->outgoing);
+    mbedtls_platform_zeroize(client, sizeof(*client));
     free(client);
 }
 
@@ -655,11 +720,16 @@ static esp_err_t start_session(ssh_client_t* client, host_profile_t const* profi
     if (client->profile.port == 0) {
         client->profile.port = 22;
     }
-    client->stop         = false;
-    client->answer_ready = false;
-    client->host_changed = false;
-    client->state        = SSH_STATE_CONNECTING;
-    client->status[0]    = '\0';
+    client->stop          = false;
+    client->answer_ready  = false;
+    client->host_changed  = false;
+    // Without this the acceptance latched by an earlier session would carry
+    // over and the next unknown host would be trusted silently.
+    client->host_accepted = false;
+    client->host_remember = false;
+    client->reply_len     = 0;
+    client->state         = SSH_STATE_CONNECTING;
+    client->status[0]     = '\0';
     strlcpy(client->password, profile->password, sizeof(client->password));
     xStreamBufferReset(client->outgoing);
 
@@ -679,7 +749,20 @@ esp_err_t ssh_client_copy_id(ssh_client_t* client, host_profile_t const* profile
     // The key is what we are here to install, so do not let it gate the login.
     host_profile_t with_password = *profile;
     with_password.use_key        = false;
-    return start_session(client, &with_password, SSH_JOB_COPY_ID);
+    esp_err_t err                = start_session(client, &with_password, SSH_JOB_COPY_ID);
+    mbedtls_platform_zeroize(&with_password, sizeof(with_password));
+    return err;
+}
+
+void ssh_client_queue_reply(ssh_client_t* client, void const* data, size_t len) {
+    // Called from the terminal while the session task is feeding it, so this is
+    // the session task's own buffer and needs no lock. Dropping a reply is
+    // better than growing a queue for a host that asks for thousands.
+    if (client->reply_len + len > sizeof(client->reply)) {
+        return;
+    }
+    memcpy(client->reply + client->reply_len, data, len);
+    client->reply_len += len;
 }
 
 bool ssh_client_copy_id_succeeded(ssh_client_t const* client) {
@@ -692,8 +775,16 @@ void ssh_client_disconnect(ssh_client_t* client) {
     }
     client->stop         = true;
     client->answer_ready = true;  // Release anything waiting on the user
-    for (int waited = 0; client->task && waited < 100; waited++) {
+    for (int waited = 0; client->task && waited < 40; waited++) {
         vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (client->task && client->socket >= 0) {
+        // Still stuck in a blocking libssh2 call. Tearing the socket down under
+        // it makes that call fail so the task can reach its own cleanup.
+        shutdown(client->socket, SHUT_RDWR);
+        for (int waited = 0; client->task && waited < 60; waited++) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
     }
 }
 

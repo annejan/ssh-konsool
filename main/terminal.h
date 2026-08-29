@@ -52,6 +52,11 @@ void term_write(term_t* term, void const* data, size_t len);
 // Resize the grid. Content is kept top-left anchored; the cursor is clamped.
 void term_resize(term_t* term, int cols, int rows);
 
+// Clear the screen and put every mode back to its default, as the RIS escape
+// sequence does. Use this rather than feeding RIS in, so nothing outside the
+// session task can end up on the terminal's reply path.
+void term_reset(term_t* term);
+
 int  term_cols(term_t const* term);
 int  term_rows(term_t const* term);
 void term_cursor(term_t const* term, int* out_col, int* out_row);
