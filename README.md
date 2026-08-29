@@ -13,6 +13,8 @@ punctuation, arrows, maths, box drawing and block elements all render, so `htop`
 - Saved connections in NVS: host, port, user, optional password.
 - Public key login with a key the badge generates and keeps to itself. The
   private half never leaves NVS; libssh2 asks for a signature and gets one.
+- Its own `ssh-copy-id`: log in with a password once, and the badge installs its
+  key on the server and uses it from then on.
 - Host key checking against a remembered fingerprint, with a prompt the first
   time and a warning when a known key changes.
 - A terminal with colours (16, 256 and 24 bit), the alternate screen, scroll
@@ -20,23 +22,25 @@ punctuation, arrows, maths, box drawing and block elements all render, so `htop`
 
 ## Getting the public key onto a server
 
-Open **SSH key** from the main menu. The page shows the fingerprint, the
-`authorized_keys` line, and a QR code of the same line. From there:
+The easy way, from the badge: give a connection a host, a user and a password,
+then press **F4** on it, in the connection list or in the editor. It logs in
+with the password once, appends the badge's key to that account's
+`authorized_keys`, and switches the connection over to key authentication. After
+that the password is not needed, and you can clear it. Installing the same key
+twice is harmless.
 
-| Key | What it does                                  |
-|-----|-----------------------------------------------|
-| F1  | Write `ssh_konsool.pub` to the SD card        |
-| F2  | Write `/int/ssh/id_ed25519.pub`, for BadgeLink  |
-| F3  | Print the line on the serial console          |
-| F4  | Replace the key (twice to confirm)            |
+If you would rather carry the key across yourself, open **SSH key** from the
+main menu. That page shows the fingerprint, the `authorized_keys` line and a QR
+code of the same line, and offers:
 
-Or let the badge install it for you, which is the easy way: fill in the host,
-user and password, then press **F4** on the connection (in the list or in the
-editor). It logs in with the password once, appends the key to the account's
-`authorized_keys`, and switches that connection over to key authentication. From
-then on the password is not needed.
+| Key | What it does                                     |
+|-----|--------------------------------------------------|
+| F1  | Write `ssh_konsool.pub` to the SD card           |
+| F2  | Write `/int/ssh/id_ed25519.pub`, for BadgeLink   |
+| F3  | Print the line on the serial console             |
+| F4  | Throw the key away and make a new one            |
 
-Pulling the key off by hand instead, with BadgeLink:
+Over BadgeLink that becomes:
 
     badgelink.sh fs download /int/ssh/id_ed25519.pub id_badge.pub
     ssh-copy-id -f -i id_badge.pub user@host
