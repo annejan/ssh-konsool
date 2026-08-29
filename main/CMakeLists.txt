@@ -1,0 +1,25 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "terminal.c"
+        "term_render.c"
+        "terminal_font.c"
+        "keymap.c"
+        "keystore.c"
+        "hosts.c"
+        "ssh_client.c"
+        "ui.c"
+    PRIV_REQUIRES
+        esp_lcd
+        esp_timer
+        esp_netif
+        nvs_flash
+        mbedtls
+        lwip
+        badge-bsp
+        tanmatsu-wifi
+        libssh2
+        qrcode
+    INCLUDE_DIRS
+        "."
+)

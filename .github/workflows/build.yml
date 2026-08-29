@@ -1,0 +1,51 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [tanmatsu, konsool]
+    container:
+      image: espressif/idf:v6.0.2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          make build DEVICE=${{ matrix.device }} IDF_PATH="$IDF_PATH"
+
+      - name: Report size
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          make size DEVICE=${{ matrix.device }} IDF_PATH="$IDF_PATH"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ssh-${{ matrix.device }}
+          path: build/${{ matrix.device }}/application.bin
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check formatting
+        run: |
+          sudo apt-get update && sudo apt-get install -y clang-format
+          # terminal_font.c is generated, and the port directory follows the
+          # style of the upstream projects it belongs to.
+          files=$(find main -name '*.c' -o -name '*.h' | grep -v terminal_font)
+          clang-format --dry-run --Werror $files

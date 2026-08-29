@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <!-- Terminal window with a shell prompt, padlocked: an SSH session -->
+  <rect x="2" y="6" width="60" height="52" rx="6" fill="#101418"/>
+  <rect x="2" y="6" width="60" height="52" rx="6" fill="none" stroke="#3c4650" stroke-width="2"/>
+  <rect x="2" y="6" width="60" height="12" rx="6" fill="#232b33"/>
+  <rect x="2" y="14" width="60" height="4" fill="#232b33"/>
+  <circle cx="10" cy="12" r="2.4" fill="#e05c4a"/>
+  <circle cx="18" cy="12" r="2.4" fill="#e0b64a"/>
+  <circle cx="26" cy="12" r="2.4" fill="#5ac06a"/>
+  <!-- prompt chevron -->
+  <path d="M12 30 L20 37 L12 44" fill="none" stroke="#5ce07a" stroke-width="4"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- cursor -->
+  <rect x="25" y="40" width="14" height="4.5" rx="1.5" fill="#5ce07a"/>
+  <!-- padlock -->
+  <path d="M45 34 v-4 a5 5 0 0 1 10 0 v4" fill="none" stroke="#9fb2c4" stroke-width="3"
+        stroke-linecap="round"/>
+  <rect x="42" y="33" width="16" height="13" rx="3" fill="#9fb2c4"/>
+  <rect x="49" y="37" width="2.5" height="5" rx="1.2" fill="#101418"/>
+</svg>
