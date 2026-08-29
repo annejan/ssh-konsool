@@ -41,9 +41,13 @@ all: build
 .PHONY: prepare
 prepare: submodules
 
+# Nothing to do when the sources are already there, which is the case after a
+# clone with --recursive or a CI checkout that fetched submodules itself.
 .PHONY: submodules
 submodules:
-	git submodule update --init --recursive
+	@if [ ! -f components/libssh2/libssh2/src/session.c ]; then \
+		git submodule update --init --recursive; \
+	fi
 
 .PHONY: sdk
 sdk:

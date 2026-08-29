@@ -229,30 +229,35 @@ int _libssh2_cipher_crypt(_libssh2_cipher_ctx *ctx,
                           int encrypt, unsigned char *block,
                           size_t blocksize, int firstlast)
 {
-    unsigned char *output;
+    /* PSA will not encrypt in place, so the block makes a short round trip
+       through scratch memory. Every packet passes through here, so the common
+       small sizes stay on the stack. */
+    unsigned char  stack_buffer[256];
+    unsigned char *output  = stack_buffer;
     size_t         written = 0;
     psa_status_t   status;
+    int            result  = -1;
 
     (void)type;
     (void)encrypt;
     (void)firstlast;
 
-    /* PSA will not encrypt in place, so the block makes a short round trip
-       through scratch memory. */
-    output = malloc(blocksize + 16);
-    if(!output)
-        return -1;
+    if(blocksize + 16 > sizeof(stack_buffer)) {
+        output = malloc(blocksize + 16);
+        if(!output)
+            return -1;
+    }
 
     status = psa_cipher_update(&ctx->operation, block, blocksize,
                                output, blocksize + 16, &written);
-    if(status != PSA_SUCCESS || written != blocksize) {
-        free(output);
-        return -1;
+    if(status == PSA_SUCCESS && written == blocksize) {
+        memcpy(block, output, blocksize);
+        result = 0;
     }
 
-    memcpy(block, output, blocksize);
-    free(output);
-    return 0;
+    if(output != stack_buffer)
+        free(output);
+    return result;
 }
 
 void _libssh2_psa_cipher_dtor(_libssh2_cipher_ctx *ctx)
