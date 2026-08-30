@@ -16,3 +16,6 @@ badgelink/
 
 # Host test binaries
 test/host/test_hosts
+
+# Downloaded font source data, see "make font"
+.font-cache/

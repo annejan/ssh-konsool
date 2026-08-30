@@ -5,6 +5,7 @@
 #include <string.h>
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "terminal_font.h"
 
 static char const TAG[] = "term";
 
@@ -138,7 +139,7 @@ static void blank_cell(term_t* t, term_cell_t* c) {
     c->cp   = ' ';
     c->fg   = t->fg;
     c->bg   = t->bg;
-    c->attr = 0;
+    c->attr = 0;  // Including the wide and continuation flags
 }
 
 static void clear_region(term_t* t, int row, int from_col, int to_col) {
@@ -259,28 +260,68 @@ static void line_feed(term_t* t) {
     }
 }
 
+// Writing over one half of a double width character leaves the other half
+// stranded, so the partner is blanked rather than left drawing half a glyph.
+static void clear_partner(term_t* t, int col, int row) {
+    term_cell_t* c = cell_at(t, col, row);
+    if ((c->attr & TERM_ATTR_CONT) && col > 0) {
+        blank_cell(t, cell_at(t, col - 1, row));
+    } else if ((c->attr & TERM_ATTR_WIDE) && col + 1 < t->cols) {
+        blank_cell(t, cell_at(t, col + 1, row));
+    }
+}
+
 static void put_codepoint(term_t* t, uint32_t cp) {
+    int width = terminal_char_width(cp);
+
     if (t->wrap_pending && t->autowrap) {
         t->cx           = 0;
         t->wrap_pending = false;
         line_feed(t);
     }
 
-    if (t->insert_mode && t->cx < t->cols - 1) {
-        memmove(cell_at(t, t->cx + 1, t->cy), cell_at(t, t->cx, t->cy), sizeof(term_cell_t) * (t->cols - t->cx - 1));
+    // A double width character cannot straddle the right edge: the last column
+    // is left blank and the character starts on the next line instead.
+    if (width == 2 && t->cx == t->cols - 1) {
+        clear_partner(t, t->cx, t->cy);
+        blank_cell(t, cell_at(t, t->cx, t->cy));
+        mark_dirty(t, t->cy);
+        if (!t->autowrap) {
+            return;
+        }
+        t->cx = 0;
+        line_feed(t);
+    }
+
+    if (t->insert_mode && t->cx + width <= t->cols - 1) {
+        memmove(cell_at(t, t->cx + width, t->cy), cell_at(t, t->cx, t->cy),
+                sizeof(term_cell_t) * (t->cols - t->cx - width));
+    }
+
+    for (int i = 0; i < width; i++) {
+        clear_partner(t, t->cx + i, t->cy);
     }
 
     term_cell_t* c = cell_at(t, t->cx, t->cy);
     c->cp          = cp;
     c->fg          = t->fg;
     c->bg          = t->bg;
-    c->attr        = t->attr;
+    c->attr        = (uint8_t)(t->attr | (width == 2 ? TERM_ATTR_WIDE : 0));
+
+    if (width == 2) {
+        term_cell_t* tail = cell_at(t, t->cx + 1, t->cy);
+        tail->cp          = 0;
+        tail->fg          = t->fg;
+        tail->bg          = t->bg;
+        tail->attr        = (uint8_t)(t->attr | TERM_ATTR_CONT);
+    }
     mark_dirty(t, t->cy);
 
-    if (t->cx == t->cols - 1) {
+    if (t->cx + width > t->cols - 1) {
         t->wrap_pending = true;
+        t->cx           = t->cols - 1;
     } else {
-        t->cx++;
+        t->cx += width;
     }
 }
 

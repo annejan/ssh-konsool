@@ -5,8 +5,10 @@ An SSH client with a VT100/xterm terminal, for the
 
 The badge keyboard is the terminal keyboard. The screen is 100x29 characters at
 8x16, or 50x14 at double size. Text is UTF-8 end to end: Latin, Greek, Cyrillic,
-punctuation, arrows, maths, box drawing and block elements all render, so `htop`,
-`vim` and `mc` look like themselves.
+punctuation, arrows, maths, box drawing, block elements and Braille all render,
+so `htop`, `vim` and `mc` look like themselves. East Asian characters take two
+columns and are drawn from 16x16 glyphs, so kana and fullwidth text line up with
+what the host thinks it sent.
 
 ## What it does
 
@@ -61,6 +63,32 @@ Over BadgeLink that becomes:
 | Ctrl + letter  | The usual control codes                   |
 | Alt + key      | Escape prefix (meta)                      |
 
+## The terminal font
+
+`main/terminal_font.c` is generated from [GNU Unifont](https://unifoundry.com/unifont/)
+and the Unicode East Asian Width data, and is checked in — a plain clone needs
+neither. Regenerate it after changing which blocks are covered:
+
+    make font                # the default set, about 80 KB of glyphs
+    make font FONT_CJK=1     # adds CJK unified ideographs, about 740 KB
+
+The default covers Latin, Greek, Cyrillic, punctuation, arrows, maths, box
+drawing, blocks, Braille, kana, Bopomofo, Hangul jamo and the fullwidth forms.
+`FONT_CJK=1` adds U+4E00..U+9FFF, which takes the binary from about 1.29 MB to
+1.96 MB — inside the 2 MB app partition, but only just, which is why it is not
+the default.
+
+Two things are kept deliberately apart in there. Glyph width is a property of
+the font: Unifont draws most characters 8x16 and East Asian ones 16x16. Column
+width is a property of Unicode, and is taken from the East Asian Width data,
+because the host advances its own cursor using its own `wcwidth` — if we
+disagreed, every line after a wide character would slide. A character with no
+glyph still takes the right number of columns and draws as U+FFFD.
+
+Hangul syllables (U+AC00..U+D7A3) would add another 350 KB and overflow the
+partition, so they are not offered; the jamo are there and compose visually
+badly, which is honest about the limit.
+
 ## Building
 
 Needs ESP-IDF v6.0.2.
@@ -75,6 +103,9 @@ Point the build at an existing SDK by writing its path to `.IDF_PATH`, or set
 The parts that can be tested without hardware are:
 
     make test
+
+That covers the known-host store and the generated font, under the address and
+undefined behaviour sanitisers.
 
 Install over BadgeLink, which also uploads the icon and metadata:
 

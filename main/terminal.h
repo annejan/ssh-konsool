@@ -21,6 +21,12 @@
 #define TERM_ATTR_REVERSE   (1 << 3)
 #define TERM_ATTR_INVISIBLE (1 << 4)
 #define TERM_ATTR_STRIKE    (1 << 5)
+// The left half of a double width character. Its glyph covers this cell and the
+// next one.
+#define TERM_ATTR_WIDE      (1 << 6)
+// The right half. It holds no character of its own and draws only a background;
+// it exists so that the column count matches what the host thinks it sent.
+#define TERM_ATTR_CONT      (1 << 7)
 
 typedef struct {
     uint32_t cp;  // Unicode codepoint, ' ' for blank

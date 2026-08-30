@@ -147,6 +147,31 @@ icons:
 	tools/render_icon.sh metadata/icon.svg metadata/icon32.png 32
 	tools/render_icon.sh metadata/icon.svg metadata/icon64.png 64
 
+# Terminal font: generated from GNU Unifont plus the Unicode East Asian Width
+# data. The result is checked in, so this only has to run when the covered
+# blocks change. FONT_CJK=1 adds the CJK unified ideographs, which is about
+# 660 KB and takes the binary to roughly 95% of the app partition.
+
+FONT_CJK ?= 0
+UNIFONT_VERSION ?= 16.0.01
+FONT_CACHE ?= .font-cache
+ifeq ($(FONT_CJK),1)
+FONT_FLAGS := --ideographs
+else
+FONT_FLAGS :=
+endif
+
+.PHONY: font
+font:
+	mkdir -p $(FONT_CACHE)
+	test -f $(FONT_CACHE)/unifont.hex || curl -sSL \
+		https://unifoundry.com/pub/unifont/unifont-$(UNIFONT_VERSION)/font-builds/unifont-$(UNIFONT_VERSION).hex.gz \
+		| gunzip > $(FONT_CACHE)/unifont.hex
+	test -f $(FONT_CACHE)/EastAsianWidth.txt || curl -sSL -o $(FONT_CACHE)/EastAsianWidth.txt \
+		https://www.unicode.org/Public/UNIDATA/EastAsianWidth.txt
+	python3 tools/make_font.py $(FONT_CACHE)/unifont.hex $(FONT_CACHE)/EastAsianWidth.txt \
+		main/terminal_font.c main/terminal_font.h $(FONT_FLAGS)
+
 # Tests that run here rather than on the badge
 
 .PHONY: test

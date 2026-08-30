@@ -86,17 +86,50 @@ static void draw_row(term_render_t* render, term_t* term, int row) {
     int col = 0;
     while (col < render->cols) {
         term_cell_t const* first = term_cell(term, col, row);
-        uint32_t           fg, bg;
+
+        // The right half of a double width character carries no glyph of its
+        // own; the left half already painted across both cells.
+        if (first->attr & TERM_ATTR_CONT) {
+            col++;
+            continue;
+        }
+
+        // A double width character is drawn on its own, because its glyph is 16
+        // pixels wide, which is exactly two cells at any whole scale.
+        if (first->attr & TERM_ATTR_WIDE) {
+            uint32_t wide_fg, wide_bg;
+            resolve_colors(first, &wide_fg, &wide_bg);
+            float x     = render->origin_x + col * render->cell_w;
+            float width = render->cell_w * 2;
+            char  text[5];
+            int   length = encode_utf8(first->cp ? first->cp : ' ', text);
+            text[length] = '\0';
+            pax_simple_rect(render->fb, wide_bg, x, y, width, render->cell_h);
+            pax_draw_text(render->fb, wide_fg, render->font, render->font_size, x, y, text);
+            if (first->attr & TERM_ATTR_UNDERLINE) {
+                pax_simple_rect(render->fb, wide_fg, x, y + render->cell_h - 1, width, 1);
+            }
+            if (first->attr & TERM_ATTR_STRIKE) {
+                pax_simple_rect(render->fb, wide_fg, x, y + render->cell_h / 2, width, 1);
+            }
+            col += 2;
+            continue;
+        }
+
+        uint32_t fg, bg;
         resolve_colors(first, &fg, &bg);
         uint8_t attr = first->attr;
 
         // Collect the longest run that shares colours and attributes.
         char text[RUN_MAX * 4 + 1];
         int  length = 0;
-        int  start  = col;
+        int  begin  = col;
         while (col < render->cols) {
             term_cell_t const* cell = term_cell(term, col, row);
             uint32_t           cell_fg, cell_bg;
+            if (cell->attr & (TERM_ATTR_WIDE | TERM_ATTR_CONT)) {
+                break;
+            }
             resolve_colors(cell, &cell_fg, &cell_bg);
             if (cell_fg != fg || cell_bg != bg || cell->attr != attr || length + 4 >= (int)sizeof(text)) {
                 break;
@@ -106,8 +139,8 @@ static void draw_row(term_render_t* render, term_t* term, int row) {
         }
         text[length] = '\0';
 
-        float x     = render->origin_x + start * render->cell_w;
-        float width = (col - start) * render->cell_w;
+        float x     = render->origin_x + begin * render->cell_w;
+        float width = (col - begin) * render->cell_w;
         pax_simple_rect(render->fb, bg, x, y, width, render->cell_h);
         pax_draw_text(render->fb, fg, render->font, render->font_size, x, y, text);
         if (attr & TERM_ATTR_UNDERLINE) {
@@ -140,11 +173,17 @@ void term_render_draw(term_render_t* render, term_t* term, bool force) {
 
     if (term_cursor_visible(term) && render->cursor_on && cursor_row < render->rows && cursor_col < render->cols) {
         term_cell_t const* cell = term_cell(term, cursor_col, cursor_row);
-        uint32_t           fg, bg;
+        // Show it on the character itself, not on its trailing half.
+        if ((cell->attr & TERM_ATTR_CONT) && cursor_col > 0) {
+            cursor_col--;
+            cell = term_cell(term, cursor_col, cursor_row);
+        }
+        uint32_t fg, bg;
         resolve_colors(cell, &fg, &bg);
-        float x = render->origin_x + cursor_col * render->cell_w;
-        float y = render->origin_y + cursor_row * render->cell_h;
-        pax_simple_rect(render->fb, fg, x, y, render->cell_w, render->cell_h);
+        float x     = render->origin_x + cursor_col * render->cell_w;
+        float y     = render->origin_y + cursor_row * render->cell_h;
+        float width = (cell->attr & TERM_ATTR_WIDE) ? render->cell_w * 2 : render->cell_w;
+        pax_simple_rect(render->fb, fg, x, y, width, render->cell_h);
         char text[5];
         int  length  = encode_utf8(cell->cp ? cell->cp : ' ', text);
         text[length] = '\0';
