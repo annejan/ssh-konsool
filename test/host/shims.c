@@ -90,6 +90,16 @@ esp_err_t nvs_get_str(nvs_handle_t handle, char const* key, char* out, size_t* l
     return load(key, out, len);
 }
 
+esp_err_t nvs_erase_key(nvs_handle_t handle, char const* key) {
+    (void)handle;
+    int slot = find(key);
+    if (slot < 0) {
+        return ESP_ERR_NVS_NOT_FOUND;
+    }
+    memset(&entries[slot], 0, sizeof(entries[slot]));
+    return ESP_OK;
+}
+
 esp_err_t nvs_set_blob(nvs_handle_t handle, char const* key, void const* value, size_t len) {
     (void)handle;
     return store(key, value, len);
