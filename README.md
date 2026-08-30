@@ -151,9 +151,11 @@ So the protection is on the other side of the connection:
   make a new key, which makes every copy of the old one useless.
 
 Host keys are pinned on first sight, and a later change is reported loudly: the
-prompt turns red, says the key CHANGED, and takes a deliberate second press to
-accept — so a swapped server key cannot be re-pinned by a reflexive Enter, and a
-saved password is never sent to the new key without that confirmation.
+prompt turns red, says the key CHANGED, and takes a deliberate second press on
+either accept key — so a swapped server key cannot be accepted, or re-pinned, by
+one reflexive keypress. Accepting a changed key *without* re-pinning it (`y`)
+also drops the saved password for that session: the badge asks for it by hand
+instead, so the stored secret never reaches a key you declined to trust.
 
 The pin is trust-on-first-use, though. If someone is already in the middle the
 very first time you connect to a host, their key is what gets pinned, silently,
