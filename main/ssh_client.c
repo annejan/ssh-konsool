@@ -50,7 +50,7 @@ struct ssh_client {
     volatile ssh_state_t state;
     char                 status[128];
     char                 fingerprint[80];
-    bool                 host_changed;
+    volatile bool        host_changed;
 
     StreamBufferHandle_t outgoing;
     TaskHandle_t         task;
@@ -279,6 +279,16 @@ static bool verify_host_key(ssh_client_t* client) {
     if (!client->host_accepted) {
         set_status(client, SSH_STATE_ERROR, "Host key rejected");
         return false;
+    }
+    if (client->host_changed && !client->host_remember) {
+        // Accepted for this session but deliberately not re-pinned, so this is
+        // not the key the badge trusts. Replaying the saved password to it would
+        // hand the secret to whoever swapped the key, which is the whole point
+        // of not pinning it. Drop the password and let try_password ask: it can
+        // still reach this host, but only by the user typing it again on purpose.
+        mbedtls_platform_zeroize(client->password, sizeof(client->password));
+        mbedtls_platform_zeroize(client->profile.password, sizeof(client->profile.password));
+        term_message(client, "Key not remembered: the saved password will not be sent to it.");
     }
     if (client->host_remember) {
         if (knownhost_set(client->profile.host, client->profile.port, client->fingerprint) != ESP_OK) {
