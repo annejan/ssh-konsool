@@ -512,17 +512,35 @@ static bool run_copy_id(ssh_client_t* client) {
     // talking would otherwise hold this task for as long as it likes.
     char    buffer[256];
     ssize_t read;
-    size_t  total     = 0;
+    size_t  total                          = 0;
     // The command prints "Key installed." or "Key was already installed." on
     // success. Watch for that word: libssh2_channel_get_exit_status() reports 0
     // both for "exited zero" and for a server that closed the channel with no
-    // exit status at all, so a hostile peer could otherwise fake success and
-    // have the badge forget the password without installing anything.
-    bool    confirmed = false;
+    // exit status at all, so without this a server where the command never ran —
+    // no such command, wrong shell, silent close — could have the badge forget
+    // the password without installing anything.
+    //
+    // This is not a defence against a hostile server. The confirmation is that
+    // server's own output, so one that wants to lie can simply print the word.
+    // It gains nothing by doing so: to reach this point it was already given the
+    // password, and lying only locks the user out of a host it already controls.
+    bool    confirmed                      = false;
+    // "installed" can straddle two reads. Keep the tail of the previous chunk so
+    // the match is not lost, which would report a good install as a failure.
+    char    carry[sizeof("installed") - 2] = {0};
+    size_t  carry_len                      = 0;
     while (!client->stop && total < COPY_ID_OUTPUT_MAX &&
            (read = libssh2_channel_read(client->channel, buffer, sizeof(buffer))) > 0) {
-        if (!confirmed && memmem_bytes(buffer, (size_t)read, "installed", 9)) {
-            confirmed = true;
+        if (!confirmed) {
+            char   joined[sizeof(carry) + sizeof(buffer)];
+            size_t joined_len = carry_len + (size_t)read;
+            memcpy(joined, carry, carry_len);
+            memcpy(joined + carry_len, buffer, (size_t)read);
+            if (memmem_bytes(joined, joined_len, "installed", 9)) {
+                confirmed = true;
+            }
+            carry_len = joined_len < sizeof(carry) ? joined_len : sizeof(carry);
+            memcpy(carry, joined + joined_len - carry_len, carry_len);
         }
         term_feed_lines(client, buffer, (size_t)read);
         total += (size_t)read;
