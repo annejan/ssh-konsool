@@ -20,7 +20,7 @@ what the host thinks it sent.
 - Its own `ssh-copy-id`: log in with a password once, and the badge installs its
   key on the server and uses it from then on.
 - Host key checking against a remembered fingerprint, with a prompt the first
-  time and a warning when a known key changes.
+  time and a red, two-press warning when a known key changes.
 - A terminal with colours (16, 256 and 24 bit), the alternate screen, scroll
   regions, insert and delete, and 512 lines of scrollback.
 
@@ -129,6 +129,13 @@ would need Secure Boot as well, which means the badge only runs firmware you
 signed, and all of it is a one-way eFuse burn. For a badge you want to keep
 hacking on, that is the wrong trade.
 
+Because of that, "forget the password" (F4, or clearing the checkbox) and
+"throw the key away" (F4 on the SSH key page) overwrite the NVS entry but cannot
+scrub the old bytes from flash: NVS wear-levels, so a superseded password or key
+can linger on unused pages until they are reused. Treat a badge that ever held a
+secret as still holding it until the flash is fully erased. Revoking on the
+server side, below, is what actually protects you.
+
 So the protection is on the other side of the connection:
 
 - The badge key is its own key. It is not a copy of the one on your laptop, and
@@ -143,8 +150,18 @@ So the protection is on the other side of the connection:
 - Lost the badge? Delete that one line, or press F4 twice on the SSH key page to
   make a new key, which makes every copy of the old one useless.
 
-Host keys are pinned on first sight and a change is reported, so a swapped
-server key is visible rather than silent.
+Host keys are pinned on first sight, and a later change is reported loudly: the
+prompt turns red, says the key CHANGED, and takes a deliberate second press on
+either accept key — so a swapped server key cannot be accepted, or re-pinned, by
+one reflexive keypress. Accepting a changed key *without* re-pinning it (`y`)
+also drops the saved password for that session: the badge asks for it by hand
+instead, so the stored secret never reaches a key you declined to trust.
+
+The pin is trust-on-first-use, though. If someone is already in the middle the
+very first time you connect to a host, their key is what gets pinned, silently,
+because there is nothing yet to compare it against. On that first connection,
+check the fingerprint the badge shows against one you got another way (the
+server's `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`).
 
 ## Crypto
 
@@ -165,8 +182,22 @@ What that buys and costs:
 - MACs: `hmac-sha2-256/512`, including the ETM variants.
 - Deliberately absent: SHA-1 signatures, 3DES, RC4, Blowfish, MD5.
 
+The ChaCha20-Poly1305 and ETM MAC modes offered are the ones the Terrapin attack
+(CVE-2023-48795) targets, so the transcript-integrity defence matters: the pinned
+libssh2 (1.11.1) negotiates the `strict-kex` extension, which closes it whenever
+the server also supports it, as every current OpenSSH does.
+
 Private keys from elsewhere cannot be imported; the badge signs with the key it
 generated itself.
+
+The firmware is built with stack canaries on (`CONFIG_COMPILER_STACK_CHECK_MODE_STRONG`),
+a cheap guard for the two places that parse hostile input: the SSH transport and
+the terminal escape parser. Two platform defaults are worth knowing about:
+`CONFIG_SPI_FLASH_DANGEROUS_WRITE_ALLOWED` is on because the app runs execute-in-place
+from the badge's AppFS partition, which the write guard would otherwise abort; and
+`CONFIG_BOOTLOADER_REGION_PROTECTION_ENABLE` is off (inherited from the badge
+template), which leaves the PMP W^X and invalid-region traps unprogrammed. Turning
+it on is worthwhile but needs testing on real hardware first.
 
 ## Layout
 

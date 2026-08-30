@@ -56,6 +56,14 @@ esp_err_t hosts_init(void) {
         err = nvs_get_blob(handle, NVS_KEY_LIST, profiles, &length);
         if (err == ESP_OK) {
             profile_count = (int)(length / sizeof(host_profile_t));
+            // The blob is trusted flash, but a truncated or corrupt entry must
+            // not leave an unterminated string for the strlen/snprintf callers
+            // that assume one. Force a terminator on every text field.
+            for (int i = 0; i < profile_count; i++) {
+                profiles[i].host[HOST_NAME_MAX - 1]         = '\0';
+                profiles[i].user[HOST_USER_MAX - 1]         = '\0';
+                profiles[i].password[HOST_PASSWORD_MAX - 1] = '\0';
+            }
         }
     } else {
         profile_count = 0;
@@ -106,12 +114,21 @@ esp_err_t hosts_remove(int index) {
 // rather than spelled out. The digest has to be cryptographic: with a
 // non-collision-resistant hash an attacker can pick a host name that lands on
 // the same entry as somewhere you trust, and have you pin their key under it.
-static void known_key(char const* host, uint16_t port, char* out, size_t len) {
+// `fold` off reproduces the slot name this code derived before the case fold
+// below existed; knownhost_get uses it to find pins written by an older build.
+static void known_key_variant(char const* host, uint16_t port, char* out, size_t len, bool fold) {
     // Length delimited, so host "a" on port 2258 cannot collide with host
     // "a:22" on port 58.
     uint8_t input[HOST_NAME_MAX + 3];
     size_t  host_len = strnlen(host, HOST_NAME_MAX - 1);
-    memcpy(input, host, host_len);
+    // Host names are case insensitive (DNS), and parse_record compares them
+    // that way. Fold to lower case here too, or "Example.com" and "example.com"
+    // land in different NVS slots and a MitM at the second spelling is offered
+    // the unseen-before prompt instead of the changed-key warning.
+    for (size_t i = 0; i < host_len; i++) {
+        uint8_t c = (uint8_t)host[i];
+        input[i]  = (fold && c >= 'A' && c <= 'Z') ? (uint8_t)(c + 32) : c;
+    }
     input[host_len]     = '\0';
     input[host_len + 1] = (uint8_t)(port >> 8);
     input[host_len + 2] = (uint8_t)port;
@@ -129,6 +146,10 @@ static void known_key(char const* host, uint16_t port, char* out, size_t len) {
     // is exactly the fifteen an NVS key name allows.
     snprintf(out, len, "h%02x%02x%02x%02x%02x%02x%02x", digest[0], digest[1], digest[2], digest[3], digest[4],
              digest[5], digest[6]);
+}
+
+static void known_key(char const* host, uint16_t port, char* out, size_t len) {
+    known_key_variant(host, port, out, len, true);
 }
 
 // Records are "host:port\nfingerprint". Returns false unless the record really
@@ -163,6 +184,59 @@ static bool parse_record(char const* record, char const* host, uint16_t port, ch
     return true;
 }
 
+// Before the case fold the slot name hashed the host exactly as typed, so a pin
+// saved for "Example.com" sits under a name this build no longer derives. Left
+// alone it reads as a host never seen before, and the next key offered — anyone's
+// — gets pinned in its place with the benign first-contact prompt. So look under
+// the old name too. The record carries its own host:port and is checked against
+// them, which is why this is safe where the "sshknown" entries abandoned at the
+// namespace bump above were not: their 32-bit slot could not be checked at all.
+// Migrate on the way past so a given host pays for this once.
+static bool legacy_get(char const* host, uint16_t port, char* out_fingerprint, size_t len) {
+    bool mixed_case = false;
+    for (size_t i = 0; i < HOST_NAME_MAX - 1 && host[i]; i++) {
+        if (host[i] >= 'A' && host[i] <= 'Z') {
+            mixed_case = true;
+            break;
+        }
+    }
+    // Without an upper-case letter the two derivations agree, so a miss under
+    // the folded name is a real miss and there is nowhere else to look.
+    if (!mixed_case) {
+        return false;
+    }
+
+    char key[NVS_KEY_NAME_MAX_SIZE];
+    known_key_variant(host, port, key, sizeof(key), false);
+
+    nvs_handle_t handle;
+    if (nvs_open(NVS_KNOWN_NS, NVS_READONLY, &handle) != ESP_OK) {
+        return false;
+    }
+    char      record[KNOWN_RECORD_MAX];
+    size_t    size = sizeof(record);
+    esp_err_t err  = nvs_get_str(handle, key, record, &size);
+    nvs_close(handle);
+    if (err != ESP_OK || !parse_record(record, host, port, out_fingerprint, len)) {
+        return false;
+    }
+
+    // Best effort: the pin is already in hand, so a failed move must not turn a
+    // known host into an unknown one. Only drop the old entry once the new one
+    // is committed.
+    if (knownhost_set(host, port, out_fingerprint) == ESP_OK) {
+        if (nvs_open(NVS_KNOWN_NS, NVS_READWRITE, &handle) == ESP_OK) {
+            if (nvs_erase_key(handle, key) == ESP_OK) {
+                nvs_commit(handle);
+            }
+            nvs_close(handle);
+        }
+    } else {
+        ESP_LOGW(TAG, "Could not move a remembered key to its new slot; will retry next time");
+    }
+    return true;
+}
+
 bool knownhost_get(char const* host, uint16_t port, char* out_fingerprint, size_t len) {
     char key[NVS_KEY_NAME_MAX_SIZE];
     known_key(host, port, key, sizeof(key));
@@ -179,7 +253,7 @@ bool knownhost_get(char const* host, uint16_t port, char* out_fingerprint, size_
     nvs_close(handle);
 
     if (err != ESP_OK) {
-        return false;
+        return legacy_get(host, port, out_fingerprint, len);
     }
     return parse_record(record, host, port, out_fingerprint, len);
 }

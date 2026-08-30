@@ -50,7 +50,7 @@ struct ssh_client {
     volatile ssh_state_t state;
     char                 status[128];
     char                 fingerprint[80];
-    bool                 host_changed;
+    volatile bool        host_changed;
 
     StreamBufferHandle_t outgoing;
     TaskHandle_t         task;
@@ -131,6 +131,21 @@ static void term_feed_lines(ssh_client_t* client, char const* data, size_t len) 
     if (used) {
         term_feed(client, buffer, used);
     }
+}
+
+// A bounded substring search: the buffer is not NUL terminated, so strstr will
+// not do. Needles here are short and the haystack is one read, so the naive
+// scan is fine.
+static bool memmem_bytes(char const* haystack, size_t haystack_len, char const* needle, size_t needle_len) {
+    if (needle_len == 0 || haystack_len < needle_len) {
+        return false;
+    }
+    for (size_t i = 0; i + needle_len <= haystack_len; i++) {
+        if (memcmp(haystack + i, needle, needle_len) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static char const* last_error(LIBSSH2_SESSION* session) {
@@ -265,8 +280,23 @@ static bool verify_host_key(ssh_client_t* client) {
         set_status(client, SSH_STATE_ERROR, "Host key rejected");
         return false;
     }
+    if (client->host_changed && !client->host_remember) {
+        // Accepted for this session but deliberately not re-pinned, so this is
+        // not the key the badge trusts. Replaying the saved password to it would
+        // hand the secret to whoever swapped the key, which is the whole point
+        // of not pinning it. Drop the password and let try_password ask: it can
+        // still reach this host, but only by the user typing it again on purpose.
+        mbedtls_platform_zeroize(client->password, sizeof(client->password));
+        mbedtls_platform_zeroize(client->profile.password, sizeof(client->profile.password));
+        term_message(client, "Key not remembered: the saved password will not be sent to it.");
+    }
     if (client->host_remember) {
-        knownhost_set(client->profile.host, client->profile.port, client->fingerprint);
+        if (knownhost_set(client->profile.host, client->profile.port, client->fingerprint) != ESP_OK) {
+            // The pin did not stick. Say so, rather than leaving the user to
+            // wonder why every future connection re-asks: an unwritten pin means
+            // a key change later would pass unnoticed.
+            term_message(client, "Warning: could not save this host key; it will be asked again next time.");
+        }
     }
     return true;
 }
@@ -482,9 +512,18 @@ static bool run_copy_id(ssh_client_t* client) {
     // talking would otherwise hold this task for as long as it likes.
     char    buffer[256];
     ssize_t read;
-    size_t  total = 0;
+    size_t  total     = 0;
+    // The command prints "Key installed." or "Key was already installed." on
+    // success. Watch for that word: libssh2_channel_get_exit_status() reports 0
+    // both for "exited zero" and for a server that closed the channel with no
+    // exit status at all, so a hostile peer could otherwise fake success and
+    // have the badge forget the password without installing anything.
+    bool    confirmed = false;
     while (!client->stop && total < COPY_ID_OUTPUT_MAX &&
            (read = libssh2_channel_read(client->channel, buffer, sizeof(buffer))) > 0) {
+        if (!confirmed && memmem_bytes(buffer, (size_t)read, "installed", 9)) {
+            confirmed = true;
+        }
         term_feed_lines(client, buffer, (size_t)read);
         total += (size_t)read;
     }
@@ -512,6 +551,12 @@ static bool run_copy_id(ssh_client_t* client) {
     int exit_status = libssh2_channel_get_exit_status(client->channel);
     if (exit_status != 0) {
         set_status(client, SSH_STATE_ERROR, "The server rejected the key (exit %d)", exit_status);
+        return false;
+    }
+    if (!confirmed) {
+        // A clean exit but no confirmation line: the command did not run as
+        // expected. Treat it as a failure so the password is kept, not dropped.
+        set_status(client, SSH_STATE_ERROR, "The server did not confirm the key was installed");
         return false;
     }
 

@@ -7,6 +7,7 @@
 #include "badge_ed25519.h"
 #include "esp_log.h"
 #include "mbedtls/base64.h"
+#include "mbedtls/platform_util.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "psa/crypto.h"
@@ -127,13 +128,19 @@ esp_err_t keystore_init(void) {
     if (load_secret()) {
         // The public half is the second block of the stored secret.
         memcpy(public_key, secret_key + 32, PUBLIC_LEN);
-        have_key = true;
-        if (derive_public_forms() != ESP_OK) {
-            have_key = false;
-        } else {
+        if (derive_public_forms() == ESP_OK) {
+            have_key = true;
             ESP_LOGI(TAG, "Loaded SSH key %s", fingerprint);
             return ESP_OK;
         }
+        // A key is stored but could not be prepared this boot (a transient PSA
+        // or base64 failure). Do NOT fall through to regenerate: that would
+        // overwrite a good, in-use identity on a passing hiccup. Fail instead,
+        // and the next boot loads the same stored key again.
+        ESP_LOGE(TAG, "Stored SSH key could not be prepared; keeping it untouched");
+        mbedtls_platform_zeroize(secret_key, sizeof(secret_key));
+        have_key = false;
+        return ESP_FAIL;
     }
 
     return keystore_regenerate();
@@ -142,6 +149,22 @@ esp_err_t keystore_init(void) {
 esp_err_t keystore_regenerate(void) {
     if (badge_ed25519_keypair(public_key, secret_key) != 0) {
         ESP_LOGE(TAG, "Key generation failed");
+        return ESP_FAIL;
+    }
+    // The RNG glue zero-fills on failure rather than handing back stale stack
+    // bytes, so an all-zero seed means the randomness was not there. Refuse to
+    // install a predictable identity, and leave any existing stored key intact.
+    bool seed_zero = true;
+    for (size_t i = 0; i < 32; i++) {
+        if (secret_key[i] != 0) {
+            seed_zero = false;
+            break;
+        }
+    }
+    if (seed_zero) {
+        ESP_LOGE(TAG, "Refusing to install a key from a failed RNG");
+        mbedtls_platform_zeroize(secret_key, sizeof(secret_key));
+        have_key = false;
         return ESP_FAIL;
     }
     have_key = true;

@@ -63,6 +63,25 @@ static void test_host_is_part_of_the_identity(void) {
     CHECK(!knownhost_get("example.comm", 22, stored, sizeof(stored)), "a longer name matched");
 }
 
+// Host names are case insensitive, so a key pinned for one spelling must be
+// found under any other. Otherwise a changed key at a differently-cased name
+// would show as a brand new host rather than a warning.
+static void test_host_case_is_normalized(void) {
+    nvs_test_reset();
+    char stored[80];
+
+    knownhost_set("Example.COM", 22, FINGERPRINT);
+    CHECK(knownhost_get("example.com", 22, stored, sizeof(stored)), "lower case spelling missed the pin");
+    CHECK(knownhost_get("EXAMPLE.COM", 22, stored, sizeof(stored)), "upper case spelling missed the pin");
+
+    // And the same key name is produced regardless of case.
+    char a[NVS_KEY_NAME_MAX_SIZE];
+    char b[NVS_KEY_NAME_MAX_SIZE];
+    known_key("Host.Example", 22, a, sizeof(a));
+    known_key("host.example", 22, b, sizeof(b));
+    CHECK(strcmp(a, b) == 0, "case changed the key name: '%s' vs '%s'", a, b);
+}
+
 // A host name can itself be full of colons.
 static void test_ipv6_hosts(void) {
     nvs_test_reset();
@@ -136,17 +155,58 @@ static void test_host_and_port_are_delimited(void) {
     CHECK(strcmp(a, b) != 0, "host and port ran together");
 }
 
+// A pin written before the slot name was case folded lives under a name this
+// build no longer derives. If the lookup cannot find it the host reads as never
+// seen, and the next key offered is pinned in its place with the benign prompt —
+// so the old entry has to be found, and moved.
+static void test_pin_under_the_legacy_slot_is_found_and_migrated(void) {
+    nvs_test_reset();
+
+    char legacy_key[NVS_KEY_NAME_MAX_SIZE];
+    known_key_variant("Example.com", 22, legacy_key, sizeof(legacy_key), false);
+    char record[KNOWN_RECORD_MAX];
+    snprintf(record, sizeof(record), "Example.com:22\n%s", FINGERPRINT);
+
+    nvs_handle_t handle;
+    CHECK(nvs_open(NVS_KNOWN_NS, NVS_READWRITE, &handle) == ESP_OK, "nvs_open failed");
+    CHECK(nvs_set_str(handle, legacy_key, record) == ESP_OK, "seeding the legacy slot failed");
+    nvs_close(handle);
+
+    char stored[80];
+    CHECK(knownhost_get("Example.com", 22, stored, sizeof(stored)), "the legacy pin was not found");
+    CHECK(strcmp(stored, FINGERPRINT) == 0, "got '%s'", stored);
+
+    // Moved rather than copied: readable under the folded spelling, and the old
+    // slot is gone so this does not run again for the same host.
+    CHECK(knownhost_get("example.com", 22, stored, sizeof(stored)), "not readable under the folded name");
+    CHECK(nvs_open(NVS_KNOWN_NS, NVS_READONLY, &handle) == ESP_OK, "nvs_open failed");
+    size_t size = sizeof(record);
+    CHECK(nvs_get_str(handle, legacy_key, record, &size) != ESP_OK, "the legacy slot survived the migration");
+    nvs_close(handle);
+}
+
+// A host with no upper-case letter derives the same slot either way, so a miss
+// is a real miss: it must not be reported as a hit from somewhere else.
+static void test_lowercase_host_still_misses(void) {
+    nvs_test_reset();
+    char stored[80];
+    CHECK(!knownhost_get("example.com", 22, stored, sizeof(stored)), "an unpinned host reported a pin");
+}
+
 int main(void) {
     test_round_trip();
     test_unknown_host_misses();
     test_port_is_part_of_the_identity();
     test_host_is_part_of_the_identity();
+    test_host_case_is_normalized();
     test_ipv6_hosts();
     test_replacing_a_key_for_the_same_host();
     test_longest_host_name();
     test_malformed_records_are_rejected();
     test_key_name_fits_nvs();
     test_host_and_port_are_delimited();
+    test_pin_under_the_legacy_slot_is_found_and_migrated();
+    test_lowercase_host_still_misses();
 
     if (failures) {
         printf("%d check(s) failed\n", failures);

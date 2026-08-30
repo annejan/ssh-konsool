@@ -94,6 +94,9 @@ static struct {
     bool          cursor_on;
     int64_t       cursor_toggled_us;
     ssh_state_t   last_state;
+    // A changed host key is accepted only on a second, deliberate press, so a
+    // habitual Enter cannot re-pin a man-in-the-middle's key.
+    bool          host_change_armed;
 
     // The saved connection a key install is running for, or -1
     int copy_id_index;
@@ -430,7 +433,7 @@ static void draw_key(void) {
 // Terminal screen
 // ---------------------------------------------------------------------------
 
-static void draw_modal(char const* title, char const* body, char const* hint) {
+static void draw_modal_ex(char const* title, char const* body, char const* hint, uint32_t accent) {
     float width  = pax_buf_get_width(app.fb);
     float height = pax_buf_get_height(app.fb);
     float box_w  = width - 80;
@@ -439,8 +442,8 @@ static void draw_modal(char const* title, char const* body, char const* hint) {
     float box_y  = (height - box_h) / 2;
 
     pax_simple_rect(app.fb, COL_PANEL, box_x, box_y, box_w, box_h);
-    pax_outline_rect(app.fb, COL_ACCENT, box_x, box_y, box_w, box_h);
-    pax_draw_text(app.fb, COL_ACCENT, FONT_UI, SIZE_TITLE, box_x + 12, box_y + 10, title);
+    pax_outline_rect(app.fb, accent, box_x, box_y, box_w, box_h);
+    pax_draw_text(app.fb, accent, FONT_UI, SIZE_TITLE, box_x + 12, box_y + 10, title);
 
     float line_y = box_y + 42;
     // The body may be several lines, separated by newlines.
@@ -458,6 +461,10 @@ static void draw_modal(char const* title, char const* body, char const* hint) {
     }
 
     pax_draw_text(app.fb, COL_DIM, FONT_UI, SIZE_SMALL, box_x + 12, box_y + box_h - 16, hint);
+}
+
+static void draw_modal(char const* title, char const* body, char const* hint) {
+    draw_modal_ex(title, body, hint, COL_ACCENT);
 }
 
 static void draw_terminal(void) {
@@ -482,12 +489,22 @@ static void draw_terminal(void) {
     term_render_status(&app.render, status);
 
     if (state == SSH_STATE_VERIFY_HOST) {
-        char body[256];
-        snprintf(body, sizeof(body), "%s\n%s",
-                 ssh_client_host_changed(app.ssh) ? "WARNING: this host key is not the one we saw before."
-                                                  : "This host has not been seen before.",
-                 ssh_client_host_fingerprint(app.ssh));
-        draw_modal("Host key", body, "enter: accept and remember   y: accept once   esc: cancel");
+        if (ssh_client_host_changed(app.ssh)) {
+            char body[256];
+            snprintf(body, sizeof(body), "WARNING: this host key has CHANGED since last time.\n%s",
+                     ssh_client_host_fingerprint(app.ssh));
+            // A changed key is the man-in-the-middle case, so it is painted red
+            // and takes two presses, unlike the benign first-contact prompt.
+            draw_modal_ex("Host key CHANGED", body,
+                          app.host_change_armed ? "AGAIN: enter re-pins   y: once, asks password   esc: cancel"
+                                                : "possible interception. enter or y to choose   esc: cancel",
+                          COL_ERROR);
+        } else {
+            char body[256];
+            snprintf(body, sizeof(body), "This host has not been seen before.\n%s",
+                     ssh_client_host_fingerprint(app.ssh));
+            draw_modal("Host key", body, "enter: accept and remember   y: accept once   esc: cancel");
+        }
     } else if (state == SSH_STATE_NEED_PASSWORD || app.modal_password) {
         char   stars[HOST_PASSWORD_MAX + 1];
         size_t length = strlen(app.modal_buffer);
@@ -519,8 +536,11 @@ static void open_terminal_screen(void) {
     app.screen            = SCREEN_TERMINAL;
     app.needs_full_redraw = true;
     app.modal_password    = false;
-    app.modal_buffer[0]   = '\0';
-    app.last_state        = SSH_STATE_IDLE;
+    app.host_change_armed = false;
+    // Wipe the whole buffer, not just the first byte: a previous prompt's
+    // password would otherwise linger in the tail.
+    mbedtls_platform_zeroize(app.modal_buffer, sizeof(app.modal_buffer));
+    app.last_state = SSH_STATE_IDLE;
 }
 
 static void start_connection(host_profile_t const* profile) {
@@ -793,6 +813,11 @@ static bool handle_key_screen(bsp_input_event_t const* event) {
     if (event->type != INPUT_EVENT_TYPE_NAVIGATION || !event->args_navigation.state) {
         return false;
     }
+    // Arming survives only the very next press of F4, so an intervening key
+    // (e.g. an export) cannot leave it primed to regenerate on the following F4.
+    if (event->args_navigation.key != BSP_INPUT_NAVIGATION_KEY_F4) {
+        app.key_confirm_regenerate = false;
+    }
     switch (event->args_navigation.key) {
         case BSP_INPUT_NAVIGATION_KEY_ESC:
             app.screen                 = SCREEN_MENU;
@@ -832,19 +857,44 @@ static bool handle_terminal(bsp_input_event_t const* event) {
 
     // Host key prompt takes every key.
     if (state == SSH_STATE_VERIFY_HOST) {
+        bool changed = ssh_client_host_changed(app.ssh);
         if (event->type == INPUT_EVENT_TYPE_NAVIGATION && event->args_navigation.state) {
             if (event->args_navigation.key == BSP_INPUT_NAVIGATION_KEY_RETURN) {
+                // For an unchanged, first-contact key one Enter accepts and
+                // remembers. For a CHANGED key the first Enter only arms the
+                // choice, so a reflexive keypress cannot re-pin a swapped key.
+                if (changed && !app.host_change_armed) {
+                    app.host_change_armed = true;
+                    return true;
+                }
+                app.host_change_armed = false;
                 ssh_client_accept_host(app.ssh, true, true);
                 return true;
             }
             if (event->args_navigation.key == BSP_INPUT_NAVIGATION_KEY_ESC) {
+                app.host_change_armed = false;
                 ssh_client_accept_host(app.ssh, false, false);
                 return true;
             }
+            // Any other key disarms, matching the delete and regenerate prompts.
+            app.host_change_armed = false;
         }
-        if (event->type == INPUT_EVENT_TYPE_KEYBOARD && event->args_keyboard.ascii == 'y') {
-            ssh_client_accept_host(app.ssh, true, false);
-            return true;
+        if (event->type == INPUT_EVENT_TYPE_KEYBOARD) {
+            if (event->args_keyboard.ascii == 'y') {
+                // 'y' is the other accept key, so it needs the same gate as
+                // enter: on a changed key the first press only arms the choice.
+                if (changed && !app.host_change_armed) {
+                    app.host_change_armed = true;
+                    return true;
+                }
+                app.host_change_armed = false;
+                ssh_client_accept_host(app.ssh, true, false);
+                return true;
+            }
+            // Anything else typed disarms, like the navigation keys above. The
+            // comment there claimed this already happened; it did not, because
+            // that branch only sees navigation events.
+            app.host_change_armed = false;
         }
         return false;
     }

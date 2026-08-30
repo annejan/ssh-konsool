@@ -33,6 +33,7 @@ void      nvs_close(nvs_handle_t handle);
 esp_err_t nvs_commit(nvs_handle_t handle);
 esp_err_t nvs_set_str(nvs_handle_t handle, char const* key, char const* value);
 esp_err_t nvs_get_str(nvs_handle_t handle, char const* key, char* out, size_t* len);
+esp_err_t nvs_erase_key(nvs_handle_t handle, char const* key);
 esp_err_t nvs_set_blob(nvs_handle_t handle, char const* key, void const* value, size_t len);
 esp_err_t nvs_get_blob(nvs_handle_t handle, char const* key, void* out, size_t* len);
 
