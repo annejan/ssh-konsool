@@ -3,7 +3,7 @@ CFLAGS ?= -std=gnu11 -Wall -Wextra -Werror -g -fsanitize=address,undefined \
           -fno-omit-frame-pointer -DHAVE_STRLCPY=0
 
 .PHONY: all run clean
-all: test_hosts test_font
+all: test_hosts test_font test_terminal
 
 test_hosts: test_hosts.c shims.c shims.h ../../main/hosts.c ../../main/hosts.h
 	$(CC) $(CFLAGS) -I. -o $@ test_hosts.c shims.c
@@ -11,9 +11,14 @@ test_hosts: test_hosts.c shims.c shims.h ../../main/hosts.c ../../main/hosts.h
 test_font: test_font.c pax_types.h ../../main/terminal_font.c ../../main/terminal_font.h
 	$(CC) $(CFLAGS) -I. -o $@ test_font.c ../../main/terminal_font.c
 
-run: test_hosts test_font
+test_terminal: test_terminal.c shims.c shims.h esp_heap_caps.h ../../main/terminal.c ../../main/terminal.h \
+               ../../main/terminal_font.c ../../main/terminal_font.h
+	$(CC) $(CFLAGS) -I. -o $@ test_terminal.c shims.c ../../main/terminal_font.c
+
+run: test_hosts test_font test_terminal
 	./test_hosts
 	./test_font
+	./test_terminal
 
 clean:
-	rm -f test_hosts test_font
+	rm -f test_hosts test_font test_terminal
