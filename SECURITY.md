@@ -46,10 +46,16 @@ with `restrict,from=...`.
 ## Reviewed
 
 The code in this tree was reviewed across those surfaces. No remotely reachable
-memory-safety defect or host-key-verification bypass was found; the terminal
-parser was fuzzed under ASan/UBSan without a fault. The review hardened a number
-of smaller points (a changed host key now needs a deliberate second, red-flagged
-confirmation before it can be re-pinned; the pin lookup is case-normalised so a
+memory-safety defect was found, and no way for a server to defeat the pin without
+a user keypress; the terminal parser was fuzzed under ASan/UBSan without a fault.
+One local bypass of the changed-key prompt was found and fixed: the second accept
+key ('y') was ungated, so a single press accepted a swapped key and the saved
+password went to it. The review hardened a number of smaller points (a changed
+host key now needs a deliberate second, red-flagged confirmation on either accept
+key before it is accepted or re-pinned, and a key accepted without being re-pinned
+never receives the saved password; pins written under an older, case-sensitive
+slot name are migrated rather than silently forgotten; the pin lookup is
+case-normalised so a
 differently-cased host name cannot dodge the warning; the RNG glue fails closed
 so a failed draw cannot yield a predictable identity key; a copy-id install is
 only believed when the server confirms it; scrollback is dropped at each session
