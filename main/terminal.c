@@ -143,6 +143,30 @@ static void blank_cell(term_t* t, term_cell_t* c) {
     c->attr = 0;  // Including the wide and continuation flags
 }
 
+// A double width character occupies a WIDE cell and the CONT cell after it, and
+// the renderer trusts that pairing: a WIDE cell in the last column would draw
+// its glyph past the right edge, and a CONT cell with no WIDE before it draws a
+// background belonging to a character that is no longer there. Blanking part of
+// a row, or shifting one sideways, can cut a pair in half — so sweep the row and
+// blank whichever half lost its partner.
+static void repair_wide_pairs(term_t* t, int row) {
+    if (row < 0 || row >= t->rows) {
+        return;
+    }
+    for (int col = 0; col < t->cols; col++) {
+        term_cell_t* c = cell_at(t, col, row);
+        if (c->attr & TERM_ATTR_WIDE) {
+            if (col + 1 >= t->cols || !(cell_at(t, col + 1, row)->attr & TERM_ATTR_CONT)) {
+                blank_cell(t, c);
+            }
+        } else if (c->attr & TERM_ATTR_CONT) {
+            if (col == 0 || !(cell_at(t, col - 1, row)->attr & TERM_ATTR_WIDE)) {
+                blank_cell(t, c);
+            }
+        }
+    }
+}
+
 static void clear_region(term_t* t, int row, int from_col, int to_col) {
     if (row < 0 || row >= t->rows) {
         return;
@@ -156,6 +180,7 @@ static void clear_region(term_t* t, int row, int from_col, int to_col) {
     for (int x = from_col; x <= to_col; x++) {
         blank_cell(t, cell_at(t, x, row));
     }
+    repair_wide_pairs(t, row);
     mark_dirty(t, row);
 }
 
@@ -307,6 +332,11 @@ static void put_codepoint(term_t* t, uint32_t cp) {
     if (t->insert_mode && t->cx + width <= t->cols - 1) {
         memmove(cell_at(t, t->cx + width, t->cy), cell_at(t, t->cx, t->cy),
                 sizeof(term_cell_t) * (t->cols - t->cx - width));
+        // The shift can push the tail half of a pair off the row, and it leaves
+        // the cells at the cursor as stale copies of what moved right. Repair
+        // before clear_partner below reads them, or it follows a stale WIDE
+        // marker and blanks the shifted character that now sits next to it.
+        repair_wide_pairs(t, t->cy);
     }
 
     for (int i = 0; i < width; i++) {
