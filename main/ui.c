@@ -72,9 +72,14 @@ static struct {
 
     // Connection list
     int menu_index;
+    // The entry F3 is armed to delete, or -1. Deleting cannot be undone, so it
+    // takes two presses, the way the key page treats regenerating.
+    int delete_index;
 
     // Editor
     host_profile_t draft;
+    // Whether F3 in the editor is armed to delete. Two presses, like the menu.
+    bool           edit_confirm_delete;
     char           port_text[8];
     int            edit_index;  // Index in the saved list, or -1 for a new one
     edit_field_t   edit_field;
@@ -219,9 +224,10 @@ static void draw_menu(void) {
     int count = menu_entry_count();
     for (int index = 0; index < count; index++) {
         bool  selected = index == app.menu_index;
+        bool  doomed   = index == app.delete_index;
         float row_y    = y + index * LINE_BODY;
-        if (selected) {
-            pax_simple_rect(app.fb, COL_SELECT, 4, row_y - 2, width - 8, LINE_BODY);
+        if (selected || doomed) {
+            pax_simple_rect(app.fb, doomed ? COL_ERROR : COL_SELECT, 4, row_y - 2, width - 8, LINE_BODY);
         }
 
         char line[128];
@@ -239,8 +245,18 @@ static void draw_menu(void) {
         pax_draw_text(app.fb, selected ? COL_TEXT : COL_DIM, FONT_UI, SIZE_BODY, 12, row_y, line);
     }
 
-    char status[128];
-    snprintf(status, sizeof(status), "%s   enter: open   F2: edit   F3: delete   F4: install badge key", app.network);
+    char status[160];
+    if (app.delete_index >= 0 && app.delete_index < hosts_count()) {
+        host_profile_t pending;
+        if (hosts_get(app.delete_index, &pending)) {
+            snprintf(status, sizeof(status), "F3 again to delete %s@%s   any other key cancels", pending.user,
+                     pending.host);
+            mbedtls_platform_zeroize(&pending, sizeof(pending));
+        }
+    } else {
+        snprintf(status, sizeof(status), "%s   enter: open   F2: edit   F3: delete   F4: install badge key",
+                 app.network);
+    }
     draw_footer(status);
     draw_toast();
 }
@@ -310,7 +326,11 @@ static void draw_edit(void) {
                       "The badge key has to be in the server's authorized_keys; see the SSH key page.");
     }
 
-    draw_footer("enter: connect   F2: save   F3: delete   F4: install badge key   esc: back   space: toggle");
+    if (app.edit_confirm_delete) {
+        draw_footer("F3 again to delete this connection   any other key cancels");
+    } else {
+        draw_footer("enter: connect   F2: save   F3: delete   F4: install badge key   esc: back   space: toggle");
+    }
     draw_toast();
 }
 
@@ -573,8 +593,9 @@ static void open_editor(int index) {
         strlcpy(app.draft.user, "root", sizeof(app.draft.user));
     }
     snprintf(app.port_text, sizeof(app.port_text), "%u", (unsigned)(app.draft.port ? app.draft.port : 22));
-    app.edit_field = EDIT_HOST;
-    app.screen     = SCREEN_EDIT;
+    app.edit_field          = EDIT_HOST;
+    app.edit_confirm_delete = false;
+    app.screen              = SCREEN_EDIT;
 }
 
 static bool save_draft(void) {
@@ -613,6 +634,13 @@ static bool handle_menu(bsp_input_event_t const* event) {
         return false;
     }
     int count = menu_entry_count();
+
+    // Arming survives only the very next press of F3, so it cannot linger and
+    // catch a press meant for something else.
+    if (event->args_navigation.key != BSP_INPUT_NAVIGATION_KEY_F3) {
+        app.delete_index = -1;
+    }
+
     switch (event->args_navigation.key) {
         case BSP_INPUT_NAVIGATION_KEY_UP:
             app.menu_index = (app.menu_index + count - 1) % count;
@@ -639,32 +667,51 @@ static bool handle_menu(bsp_input_event_t const* event) {
         case BSP_INPUT_NAVIGATION_KEY_F2:
             if (app.menu_index < hosts_count()) {
                 open_editor(app.menu_index);
+            } else {
+                toast("Pick a connection first");
             }
             return true;
         case BSP_INPUT_NAVIGATION_KEY_F4:
             if (app.menu_index < hosts_count()) {
                 start_copy_id(app.menu_index);
+            } else {
+                toast("Pick a connection first");
             }
             return true;
         case BSP_INPUT_NAVIGATION_KEY_F3:
-            if (app.menu_index < hosts_count()) {
-                hosts_remove(app.menu_index);
-                if (app.menu_index >= menu_entry_count()) {
-                    app.menu_index = menu_entry_count() - 1;
-                }
-                toast("Deleted");
+            if (app.menu_index >= hosts_count()) {
+                toast("Pick a connection first");
+                return true;
             }
+            if (app.delete_index != app.menu_index) {
+                app.delete_index = app.menu_index;  // Ask first
+                return true;
+            }
+            app.delete_index = -1;
+            hosts_remove(app.menu_index);
+            if (app.menu_index >= menu_entry_count()) {
+                app.menu_index = menu_entry_count() - 1;
+            }
+            toast("Deleted");
             return true;
         case BSP_INPUT_NAVIGATION_KEY_ESC:
             bsp_device_restart_to_launcher();
             return true;
         default:
+            // A key the menu has no use for. Logged because a key that never
+            // arrives and a key that arrives and is ignored look identical from
+            // the outside.
+            ESP_LOGI(TAG, "Menu ignored navigation key %d", (int)event->args_navigation.key);
             return false;
     }
 }
 
 static bool handle_edit(bsp_input_event_t const* event) {
     if (event->type == INPUT_EVENT_TYPE_NAVIGATION && event->args_navigation.state) {
+        // Arming survives only the very next press of F3.
+        if (event->args_navigation.key != BSP_INPUT_NAVIGATION_KEY_F3) {
+            app.edit_confirm_delete = false;
+        }
         switch (event->args_navigation.key) {
             case BSP_INPUT_NAVIGATION_KEY_UP:
                 app.edit_field = (app.edit_field + EDIT_FIELD_COUNT - 1) % EDIT_FIELD_COUNT;
@@ -683,11 +730,25 @@ static bool handle_edit(bsp_input_event_t const* event) {
                 save_draft();
                 return true;
             case BSP_INPUT_NAVIGATION_KEY_F3:
-                if (app.edit_index >= 0) {
-                    hosts_remove(app.edit_index);
-                    app.screen     = SCREEN_MENU;
-                    app.menu_index = 0;
-                    toast("Deleted");
+                if (app.edit_index < 0) {
+                    toast("Nothing saved to delete yet");
+                    return true;
+                }
+                if (!app.edit_confirm_delete) {
+                    app.edit_confirm_delete = true;  // Ask first
+                    return true;
+                }
+                app.edit_confirm_delete = false;
+                hosts_remove(app.edit_index);
+                app.screen     = SCREEN_MENU;
+                app.menu_index = 0;
+                toast("Deleted");
+                return true;
+            case BSP_INPUT_NAVIGATION_KEY_F4:
+                // Save first, so the connection has an index to turn the key on
+                // for once the install succeeds.
+                if (save_draft()) {
+                    start_copy_id(app.edit_index);
                 }
                 return true;
             case BSP_INPUT_NAVIGATION_KEY_RETURN: {
@@ -713,6 +774,7 @@ static bool handle_edit(bsp_input_event_t const* event) {
                 }
                 break;
             default:
+                ESP_LOGI(TAG, "Editor ignored navigation key %d", (int)event->args_navigation.key);
                 break;
         }
     }
@@ -885,6 +947,7 @@ esp_err_t ui_init(pax_buf_t* fb, term_t* term, SemaphoreHandle_t term_lock, ssh_
     app.ssh           = ssh;
     app.screen        = SCREEN_MENU;
     app.copy_id_index = -1;
+    app.delete_index  = -1;
     app.font_scale    = 1;
     app.cursor_on     = true;
     strlcpy(app.network, "no network", sizeof(app.network));

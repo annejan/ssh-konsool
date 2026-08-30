@@ -10,6 +10,7 @@
 #include "bsp/led.h"
 #include "bsp/power.h"
 #include "driver/gpio.h"
+#include "esp_app_desc.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -157,6 +158,12 @@ static void terminal_response(void const* data, size_t len, void* ctx) {
 }
 
 void app_main(void) {
+    // Say which build this is. Without it there is no way to tell from the
+    // outside whether an install actually replaced what is running.
+    esp_app_desc_t const* app_description = esp_app_get_description();
+    ESP_LOGW(TAG, "SSH client, built %s %s, IDF %s", app_description->date, app_description->time,
+             app_description->idf_ver);
+
     gpio_install_isr_service(0);
 
     esp_err_t res = nvs_flash_init();

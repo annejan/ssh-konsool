@@ -12,6 +12,8 @@ idf_component_register(
     PRIV_REQUIRES
         esp_lcd
         esp_timer
+        esp_app_format
+        app_update
         esp_netif
         nvs_flash
         mbedtls
