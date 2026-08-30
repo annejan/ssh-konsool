@@ -84,7 +84,7 @@ esp_err_t hosts_set(int index, host_profile_t const* profile) {
     }
     profiles[index] = *profile;
     if (!profiles[index].save_password) {
-        memset(profiles[index].password, 0, sizeof(profiles[index].password));
+        mbedtls_platform_zeroize(profiles[index].password, sizeof(profiles[index].password));
     }
     if (index == profile_count) {
         profile_count++;

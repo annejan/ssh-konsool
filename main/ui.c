@@ -268,7 +268,8 @@ static void draw_edit(void) {
     pax_background(app.fb, COL_BG);
     float y = draw_title(app.edit_index < 0 ? "New connection" : "Edit connection");
 
-    char const* labels[EDIT_FIELD_COUNT] = {"Host", "Port", "User", "Password", "Save password", "Use badge key"};
+    char const* labels[EDIT_FIELD_COUNT] = {"Host",         "Port", "User", "Password", "Keep password on badge",
+                                            "Use badge key"};
     char        values[EDIT_FIELD_COUNT][96];
 
     snprintf(values[EDIT_HOST], sizeof(values[0]), "%s", app.draft.host);
@@ -296,8 +297,15 @@ static void draw_edit(void) {
         pax_draw_text(app.fb, selected ? COL_ACCENT : COL_TEXT, FONT_UI, SIZE_BODY, 180, row_y, values[index]);
     }
 
+    float note_y = y + EDIT_FIELD_COUNT * (LINE_BODY + 4) + 10;
+    if (app.draft.save_password) {
+        // Say what keeping it actually means, rather than leaving "save" to
+        // sound harmless.
+        pax_draw_text(app.fb, COL_WARN, FONT_UI, SIZE_SMALL, 12, note_y,
+                      "Stored unencrypted; anyone with the badge can read it. F4 installs the key instead.");
+        note_y += LINE_BODY;
+    }
     if (app.draft.use_key) {
-        float note_y = y + EDIT_FIELD_COUNT * (LINE_BODY + 4) + 10;
         pax_draw_text(app.fb, COL_DIM, FONT_UI, SIZE_SMALL, 12, note_y,
                       "The badge key has to be in the server's authorized_keys; see the SSH key page.");
     }
@@ -501,6 +509,37 @@ static void start_connection(host_profile_t const* profile) {
     if (ssh_client_connect(app.ssh, profile) != ESP_OK) {
         toast("Cannot start the session");
     }
+}
+
+// Once the key is on the server the password has done its job. Hand the
+// connection over to the key and forget the password rather than leaving both
+// on the badge, which is the whole point of installing the key.
+static void finish_copy_id(void) {
+    int index         = app.copy_id_index;
+    app.copy_id_index = -1;
+    if (index < 0) {
+        return;
+    }
+
+    if (!ssh_client_copy_id_succeeded(app.ssh)) {
+        return;
+    }
+
+    host_profile_t profile;
+    if (!hosts_get(index, &profile)) {
+        return;
+    }
+
+    bool had_password     = profile.save_password && profile.password[0];
+    profile.use_key       = true;
+    profile.save_password = false;
+    mbedtls_platform_zeroize(profile.password, sizeof(profile.password));
+
+    // hosts_set drops the stored password whenever save_password is clear.
+    if (hosts_set(index, &profile) == ESP_OK) {
+        toast(had_password ? "Key installed, password forgotten" : "Key installed, this connection now uses it");
+    }
+    mbedtls_platform_zeroize(&profile, sizeof(profile));
 }
 
 // Log in with the password once and leave the badge key behind, so every login
@@ -771,6 +810,9 @@ static bool handle_terminal(bsp_input_event_t const* event) {
         switch (event->args_navigation.key) {
             case BSP_INPUT_NAVIGATION_KEY_ESC:
                 ssh_client_disconnect(app.ssh);
+                // Leaving the screen means nobody is left to notice the session
+                // ending, so settle the key install here instead.
+                finish_copy_id();
                 app.screen = SCREEN_MENU;
                 return true;
             case BSP_INPUT_NAVIGATION_KEY_F1:
@@ -889,6 +931,10 @@ bool ui_tick(void) {
             // whole screen has to be painted again.
             app.needs_full_redraw = true;
             redraw                = true;
+
+            if (state == SSH_STATE_CLOSED || state == SSH_STATE_ERROR) {
+                finish_copy_id();
+            }
         }
 
         xSemaphoreTake(app.term_lock, portMAX_DELAY);

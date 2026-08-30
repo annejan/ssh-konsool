@@ -10,7 +10,8 @@ punctuation, arrows, maths, box drawing and block elements all render, so `htop`
 
 ## What it does
 
-- Saved connections in NVS: host, port, user, optional password.
+- Saved connections in NVS: host, port, user, and optionally the password,
+  which the badge drops as soon as the key can do the job.
 - Public key login with a key the badge generates itself. The private half stays
   in NVS; libssh2 asks for a signature and gets one, never the key. See
   [What this does not protect against](#what-this-does-not-protect-against).
@@ -26,9 +27,9 @@ punctuation, arrows, maths, box drawing and block elements all render, so `htop`
 The easy way, from the badge: give a connection a host, a user and a password,
 then press **F4** on it, in the connection list or in the editor. It logs in
 with the password once, appends the badge's key to that account's
-`authorized_keys`, and switches the connection over to key authentication. After
-that the password is not needed, and you can clear it. Installing the same key
-twice is harmless.
+`authorized_keys`, switches the connection over to key authentication, and
+forgets the password — keeping both on the badge would defeat the point.
+Installing the same key twice is harmless.
 
 If you would rather carry the key across yourself, open **SSH key** from the
 main menu. That page shows the fingerprint, the `authorized_keys` line and a QR
@@ -105,8 +106,9 @@ So the protection is on the other side of the connection:
 
       restrict,from="10.0.0.0/8" ssh-ed25519 AAAA... ssh@tanmatsu
 
-- Saving a password is off by default. Leave it off, and let the key do the work
-  after the first login.
+- Keeping a password on the badge is off by default, and the editor says what it
+  costs when you turn it on. Leave it off, and let F4 do the work after the
+  first login.
 - Lost the badge? Delete that one line, or press F4 twice on the SSH key page to
   make a new key, which makes every copy of the old one useless.
 
