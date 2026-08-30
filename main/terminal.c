@@ -72,6 +72,7 @@ struct term {
     int  osc_len;
 
     uint32_t utf_cp;
+    uint32_t utf_min;  // Smallest value legal for the sequence length, to reject overlong forms
     int      utf_left;
 
     bool tabstop[TERM_MAX_COLS];
@@ -775,6 +776,13 @@ void term_reset(term_t* t) {
     t->intermediate  = 0;
     t->osc_len       = 0;
     t->view_offset   = 0;
+
+    // A reset marks a session boundary. Drop the scrollback too, so one server's
+    // output cannot be read back, dressed as history, during a later session to
+    // a different (and trusted) host. This matches what xterm's RIS does.
+    t->sb_count = 0;
+    t->sb_head  = 0;
+
     mark_all_rows(t);
 }
 
@@ -840,7 +848,19 @@ static void feed_byte(term_t* t, uint8_t b) {
                 if ((b & 0xC0) == 0x80) {
                     t->utf_cp = (t->utf_cp << 6) | (b & 0x3F);
                     if (--t->utf_left == 0) {
-                        put_codepoint(t, t->utf_cp);
+                        // Reject the sequences that decode but are not valid
+                        // scalar values: overlong encodings (which smuggle
+                        // ASCII like ESC or '[' past a naive filter), the UTF-16
+                        // surrogate range, and anything past U+10FFFF. Drawing
+                        // U+FFFD instead keeps every downstream consumer of the
+                        // cell (render, and any future copy/log) safe by
+                        // construction.
+                        uint32_t cp  = t->utf_cp;
+                        uint32_t min = t->utf_min;
+                        if (cp < min || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+                            cp = 0xFFFD;
+                        }
+                        put_codepoint(t, cp);
                     }
                     return;
                 }
@@ -856,12 +876,15 @@ static void feed_byte(term_t* t, uint8_t b) {
             } else if ((b & 0xE0) == 0xC0) {
                 t->utf_cp   = b & 0x1F;
                 t->utf_left = 1;
+                t->utf_min  = 0x80;
             } else if ((b & 0xF0) == 0xE0) {
                 t->utf_cp   = b & 0x0F;
                 t->utf_left = 2;
+                t->utf_min  = 0x800;
             } else if ((b & 0xF8) == 0xF0) {
                 t->utf_cp   = b & 0x07;
                 t->utf_left = 3;
+                t->utf_min  = 0x10000;
             }
             break;
 

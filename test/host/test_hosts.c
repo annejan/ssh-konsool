@@ -63,6 +63,25 @@ static void test_host_is_part_of_the_identity(void) {
     CHECK(!knownhost_get("example.comm", 22, stored, sizeof(stored)), "a longer name matched");
 }
 
+// Host names are case insensitive, so a key pinned for one spelling must be
+// found under any other. Otherwise a changed key at a differently-cased name
+// would show as a brand new host rather than a warning.
+static void test_host_case_is_normalized(void) {
+    nvs_test_reset();
+    char stored[80];
+
+    knownhost_set("Example.COM", 22, FINGERPRINT);
+    CHECK(knownhost_get("example.com", 22, stored, sizeof(stored)), "lower case spelling missed the pin");
+    CHECK(knownhost_get("EXAMPLE.COM", 22, stored, sizeof(stored)), "upper case spelling missed the pin");
+
+    // And the same key name is produced regardless of case.
+    char a[NVS_KEY_NAME_MAX_SIZE];
+    char b[NVS_KEY_NAME_MAX_SIZE];
+    known_key("Host.Example", 22, a, sizeof(a));
+    known_key("host.example", 22, b, sizeof(b));
+    CHECK(strcmp(a, b) == 0, "case changed the key name: '%s' vs '%s'", a, b);
+}
+
 // A host name can itself be full of colons.
 static void test_ipv6_hosts(void) {
     nvs_test_reset();
@@ -141,6 +160,7 @@ int main(void) {
     test_unknown_host_misses();
     test_port_is_part_of_the_identity();
     test_host_is_part_of_the_identity();
+    test_host_case_is_normalized();
     test_ipv6_hosts();
     test_replacing_a_key_for_the_same_host();
     test_longest_host_name();

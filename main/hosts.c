@@ -56,6 +56,14 @@ esp_err_t hosts_init(void) {
         err = nvs_get_blob(handle, NVS_KEY_LIST, profiles, &length);
         if (err == ESP_OK) {
             profile_count = (int)(length / sizeof(host_profile_t));
+            // The blob is trusted flash, but a truncated or corrupt entry must
+            // not leave an unterminated string for the strlen/snprintf callers
+            // that assume one. Force a terminator on every text field.
+            for (int i = 0; i < profile_count; i++) {
+                profiles[i].host[HOST_NAME_MAX - 1]         = '\0';
+                profiles[i].user[HOST_USER_MAX - 1]         = '\0';
+                profiles[i].password[HOST_PASSWORD_MAX - 1] = '\0';
+            }
         }
     } else {
         profile_count = 0;
@@ -111,7 +119,14 @@ static void known_key(char const* host, uint16_t port, char* out, size_t len) {
     // "a:22" on port 58.
     uint8_t input[HOST_NAME_MAX + 3];
     size_t  host_len = strnlen(host, HOST_NAME_MAX - 1);
-    memcpy(input, host, host_len);
+    // Host names are case insensitive (DNS), and parse_record compares them
+    // that way. Fold to lower case here too, or "Example.com" and "example.com"
+    // land in different NVS slots and a MitM at the second spelling is offered
+    // the unseen-before prompt instead of the changed-key warning.
+    for (size_t i = 0; i < host_len; i++) {
+        uint8_t c = (uint8_t)host[i];
+        input[i]  = (c >= 'A' && c <= 'Z') ? (uint8_t)(c + 32) : c;
+    }
     input[host_len]     = '\0';
     input[host_len + 1] = (uint8_t)(port >> 8);
     input[host_len + 2] = (uint8_t)port;

@@ -36,10 +36,14 @@ void _libssh2_init_aes_ctr(void)
     /* PSA implements CTR mode itself; nothing to register. */
 }
 
-/* TweetNaCl asks the platform for randomness under this name. */
+/* TweetNaCl asks the platform for randomness under this name. Its callers take
+   no return value, so on failure the buffer is zero-filled rather than left
+   holding stale stack bytes: a deterministic all-zero result the key generator
+   checks for and rejects, instead of a silent weak key. */
 void randombytes(unsigned char *buf, unsigned long long len)
 {
-    psa_generate_random(buf, (size_t)len);
+    if(psa_generate_random(buf, (size_t)len) != PSA_SUCCESS)
+        memset(buf, 0, (size_t)len);
 }
 
 /* ------------------------------------------------------------------ */
