@@ -496,8 +496,8 @@ static void draw_terminal(void) {
             // A changed key is the man-in-the-middle case, so it is painted red
             // and takes two presses, unlike the benign first-contact prompt.
             draw_modal_ex("Host key CHANGED", body,
-                          app.host_change_armed ? "enter AGAIN to accept the new key   y: accept once   esc: cancel"
-                                                : "possible interception. enter: review   y: accept once   esc: cancel",
+                          app.host_change_armed ? "AGAIN: enter re-pins   y: once, asks password   esc: cancel"
+                                                : "possible interception. enter or y to choose   esc: cancel",
                           COL_ERROR);
         } else {
             char body[256];
@@ -879,10 +879,22 @@ static bool handle_terminal(bsp_input_event_t const* event) {
             // Any other key disarms, matching the delete and regenerate prompts.
             app.host_change_armed = false;
         }
-        if (event->type == INPUT_EVENT_TYPE_KEYBOARD && event->args_keyboard.ascii == 'y') {
+        if (event->type == INPUT_EVENT_TYPE_KEYBOARD) {
+            if (event->args_keyboard.ascii == 'y') {
+                // 'y' is the other accept key, so it needs the same gate as
+                // enter: on a changed key the first press only arms the choice.
+                if (changed && !app.host_change_armed) {
+                    app.host_change_armed = true;
+                    return true;
+                }
+                app.host_change_armed = false;
+                ssh_client_accept_host(app.ssh, true, false);
+                return true;
+            }
+            // Anything else typed disarms, like the navigation keys above. The
+            // comment there claimed this already happened; it did not, because
+            // that branch only sees navigation events.
             app.host_change_armed = false;
-            ssh_client_accept_host(app.ssh, true, false);
-            return true;
         }
         return false;
     }
