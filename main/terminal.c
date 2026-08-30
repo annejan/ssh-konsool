@@ -172,7 +172,17 @@ static void push_scrollback(term_t* t) {
     if (t->alt_active || !t->sb) {
         return;
     }
-    memcpy(&t->sb[t->sb_head * STRIDE], &t->screen[0], sizeof(term_cell_t) * STRIDE);
+    term_cell_t* line = &t->sb[t->sb_head * STRIDE];
+    memcpy(line, &t->screen[0], sizeof(term_cell_t) * (size_t)t->cols);
+    // Only up to the current width, then blank the rest of the stride. Columns
+    // past t->cols are not part of this session's screen and clear_region clamps
+    // to t->cols - 1, so term_reset never wipes them: they can still hold glyphs
+    // from an earlier, wider session. Copying the whole stride would carry that
+    // text into this session's scrollback, where widening the terminal again
+    // (F1) would render it.
+    for (int x = t->cols; x < STRIDE; x++) {
+        blank_cell(t, &line[x]);
+    }
     t->sb_head = (t->sb_head + 1) % TERM_SCROLLBACK;
     if (t->sb_count < TERM_SCROLLBACK) {
         t->sb_count++;
