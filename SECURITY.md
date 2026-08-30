@@ -58,7 +58,8 @@ slot name are migrated rather than silently forgotten; the pin lookup is
 case-normalised so a
 differently-cased host name cannot dodge the warning; the RNG glue fails closed
 so a failed draw cannot yield a predictable identity key; a copy-id install is
-only believed when the server confirms it; scrollback is dropped at each session
+believed only when the command says it ran, which catches a server where it never
+ran rather than one that lies about it; scrollback is dropped at each session
 boundary). Residual risks are the out-of-scope items above, plus the
 trust-on-first-use window and the `BOOTLOADER_REGION_PROTECTION` default noted in
 the README's Crypto section.
