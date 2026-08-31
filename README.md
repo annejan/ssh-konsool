@@ -27,22 +27,26 @@ what the host thinks it sent.
 ## Getting the public key onto a server
 
 The easy way, from the badge: give a connection a host, a user and a password,
-then press **F4** on it, in the connection list or in the editor. It logs in
-with the password once, appends the badge's key to that account's
-`authorized_keys`, switches the connection over to key authentication, and
-forgets the password — keeping both on the badge would defeat the point.
-Installing the same key twice is harmless.
+then press the **green ●** key on it, in the connection list or in the
+editor. It logs in with the password once, appends the badge's key to that
+account's `authorized_keys`, switches the connection over to key
+authentication, and forgets the password — keeping both on the badge would
+defeat the point. Installing the same key twice is harmless.
 
 If you would rather carry the key across yourself, open **SSH key** from the
 main menu. That page shows the fingerprint, the `authorized_keys` line and a QR
 code of the same line, and offers:
 
-| Key | What it does                                     |
-|-----|--------------------------------------------------|
-| F1  | Write `ssh_konsool.pub` to the SD card           |
-| F2  | Write `/int/ssh/id_ed25519.pub`, for BadgeLink   |
-| F3  | Print the line on the serial console             |
-| F4  | Throw the key away and make a new one            |
+| Key                 | What it does                                   |
+|---------------------|------------------------------------------------|
+| Red ✗ (F1)          | Write `ssh_konsool.pub` to the SD card         |
+| Orange ▲ (F2)       | Write `/int/ssh/id_ed25519.pub`, for BadgeLink |
+| Yellow ■ (F3)       | Print the line on the serial console           |
+| Green ● (F4)        | Throw the key away and make a new one          |
+
+The six function keys have no numbers printed on them; the badge calls them
+F1..F6 internally, and the screen names them by the shape and colour on the
+keycap: red ✗, orange ▲, yellow ■, green ●, blue ☁, purple ◆.
 
 Over BadgeLink that becomes:
 
@@ -54,12 +58,12 @@ Over BadgeLink that becomes:
 | Key            | Sends                                     |
 |----------------|-------------------------------------------|
 | Fn + Esc       | Back to the menu (local)                  |
-| Fn + F1        | Toggle double size (local)                |
+| Fn + red ✗     | Toggle double size (local)                |
 | Shift + Up/Dn  | Scrollback (local)                        |
 | Fn + Left/Rght | Home / End                                |
 | Fn + Up/Down   | Page Up / Page Down                       |
 | Fn + Backspace | Delete                                    |
-| Fn + F1..F6    | F7..F12                                   |
+| Fn + ✗..◆      | F7..F12                                   |
 | Ctrl + letter  | The usual control codes                   |
 | Alt + key      | Escape prefix (meta)                      |
 

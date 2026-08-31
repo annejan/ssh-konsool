@@ -2,6 +2,7 @@
 
 #include "term_render.h"
 #include <string.h>
+#include "keycaps.h"
 #include "pax_fonts.h"
 #include "pax_text.h"
 #include "terminal_font.h"
@@ -199,5 +200,5 @@ void term_render_status(term_render_t* render, char const* text) {
     float height = pax_buf_get_height(render->fb);
     float bar    = TERM_STATUS_BAR_HEIGHT;
     pax_simple_rect(render->fb, 0xFF1E2A38, 0, height - bar, width, bar);
-    pax_draw_text(render->fb, 0xFFB8CCE0, terminal_font, TERMINAL_FONT_HEIGHT, 4, height - bar - 1, text);
+    keycap_draw_text(render->fb, 0xFFB8CCE0, terminal_font, TERMINAL_FONT_HEIGHT, 4, height - bar - 1, text);
 }
