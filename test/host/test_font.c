@@ -11,9 +11,9 @@
 //   Column widths have to match what a remote host's wcwidth would say, or the
 //   cursor drifts apart from the host's idea of it and the line slides.
 
-#include "../../main/terminal_font.h"
 #include <stdio.h>
 #include <string.h>
+#include "../../main/terminal_font.h"
 
 static int failures = 0;
 
@@ -34,11 +34,10 @@ static uint8_t const* glyph_of(uint32_t codepoint, int* out_width) {
         if (codepoint < range->start || codepoint > range->end) {
             continue;
         }
-        int width       = range->bitmap_mono.width;
-        int row_stride  = (width * range->bitmap_mono.bpp + 7) / 8;
-        *out_width      = width;
-        return range->bitmap_mono.glyphs + (size_t)row_stride * range->bitmap_mono.height *
-                                               (codepoint - range->start);
+        int width      = range->bitmap_mono.width;
+        int row_stride = (width * range->bitmap_mono.bpp + 7) / 8;
+        *out_width     = width;
+        return range->bitmap_mono.glyphs + (size_t)row_stride * range->bitmap_mono.height * (codepoint - range->start);
     }
     return NULL;
 }
@@ -111,8 +110,7 @@ static void test_glyph_never_wider_than_its_cells(void) {
         int allowed = terminal_char_width(cp) * TERMINAL_FONT_WIDTH;
         if (width > allowed) {
             if (mismatches < 8) {
-                printf("      U+%04X glyph is %d px but only %d column(s)\n", cp, width,
-                       terminal_char_width(cp));
+                printf("      U+%04X glyph is %d px but only %d column(s)\n", cp, width, terminal_char_width(cp));
             }
             mismatches++;
         } else if (width < allowed) {
@@ -146,13 +144,31 @@ static void test_essential_coverage(void) {
         uint32_t    cp;
         char const* what;
     } const needed[] = {
-        {'A', "Latin A"},          {0x00E9, "e acute"},        {0x03B1, "Greek alpha"},
-        {0x0416, "Cyrillic Zhe"},  {0x2500, "box light horizontal"},
-        {0x2502, "box light vertical"},                        {0x250C, "box down and right"},
-        {0x2588, "full block"},    {0x2591, "light shade"},    {0x2192, "rightwards arrow"},
-        {0x2026, "ellipsis"},      {0x2018, "left quote"},     {0x20AC, "euro"},
-        {0xFFFD, "replacement"},   {0x3042, "Hiragana A"},     {0x30AB, "Katakana KA"},
+        {'A', "Latin A"},
+        {0x00E9, "e acute"},
+        {0x03B1, "Greek alpha"},
+        {0x0416, "Cyrillic Zhe"},
+        {0x2500, "box light horizontal"},
+        {0x2502, "box light vertical"},
+        {0x250C, "box down and right"},
+        {0x2588, "full block"},
+        {0x2591, "light shade"},
+        {0x2192, "rightwards arrow"},
+        {0x2026, "ellipsis"},
+        {0x2018, "left quote"},
+        {0x20AC, "euro"},
+        {0xFFFD, "replacement"},
+        {0x3042, "Hiragana A"},
+        {0x30AB, "Katakana KA"},
         {0xFF21, "fullwidth A"},
+        // The six function keycaps are drawn from the font, so the UI loses its
+        // key labels if these ever fall out of the covered blocks.
+        {0x2717, "keycap cross"},
+        {0x25B2, "keycap triangle"},
+        {0x25A0, "keycap square"},
+        {0x25CF, "keycap circle"},
+        {0x2601, "keycap cloud"},
+        {0x25C6, "keycap diamond"},
     };
     for (size_t i = 0; i < sizeof(needed) / sizeof(needed[0]); i++) {
         CHECK(terminal_font_has_glyph(needed[i].cp), "missing %s (U+%04X)", needed[i].what, needed[i].cp);

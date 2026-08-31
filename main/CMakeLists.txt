@@ -5,6 +5,7 @@ idf_component_register(
         "term_render.c"
         "terminal_font.c"
         "keymap.c"
+        "keycaps.c"
         "keystore.c"
         "hosts.c"
         "ssh_client.c"

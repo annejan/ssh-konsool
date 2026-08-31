@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "hosts.h"
+#include "keycaps.h"
 #include "keymap.h"
 #include "keystore.h"
 #include "mbedtls/platform_util.h"
@@ -201,7 +202,7 @@ static void draw_footer(char const* text) {
     float width  = pax_buf_get_width(app.fb);
     float height = pax_buf_get_height(app.fb);
     pax_simple_rect(app.fb, COL_PANEL, 0, height - 22, width, 22);
-    pax_draw_text(app.fb, COL_DIM, FONT_UI, SIZE_SMALL, 8, height - 19, text);
+    keycap_draw_text(app.fb, COL_DIM, FONT_UI, SIZE_SMALL, 8, height - 19, text);
 }
 
 static void draw_toast(void) {
@@ -252,12 +253,13 @@ static void draw_menu(void) {
     if (app.delete_index >= 0 && app.delete_index < hosts_count()) {
         host_profile_t pending;
         if (hosts_get(app.delete_index, &pending)) {
-            snprintf(status, sizeof(status), "F3 again to delete %s@%s   any other key cancels", pending.user,
+            snprintf(status, sizeof(status), KEYCAP_F3 " again to delete %s@%s   any other key cancels", pending.user,
                      pending.host);
             mbedtls_platform_zeroize(&pending, sizeof(pending));
         }
     } else {
-        snprintf(status, sizeof(status), "%s   enter: open   F2: edit   F3: delete   F4: install badge key",
+        snprintf(status, sizeof(status),
+                 "%s   enter: open   " KEYCAP_F2 ": edit   " KEYCAP_F3 ": delete   " KEYCAP_F4 ": install badge key",
                  app.network);
     }
     draw_footer(status);
@@ -320,8 +322,9 @@ static void draw_edit(void) {
     if (app.draft.save_password) {
         // Say what keeping it actually means, rather than leaving "save" to
         // sound harmless.
-        pax_draw_text(app.fb, COL_WARN, FONT_UI, SIZE_SMALL, 12, note_y,
-                      "Stored unencrypted; anyone with the badge can read it. F4 installs the key instead.");
+        keycap_draw_text(app.fb, COL_WARN, FONT_UI, SIZE_SMALL, 12, note_y,
+                         "Stored unencrypted; anyone with the badge can read it. " KEYCAP_F4
+                         " installs the key instead.");
         note_y += LINE_BODY;
     }
     if (app.draft.use_key) {
@@ -330,9 +333,10 @@ static void draw_edit(void) {
     }
 
     if (app.edit_confirm_delete) {
-        draw_footer("F3 again to delete this connection   any other key cancels");
+        draw_footer(KEYCAP_F3 " again to delete this connection   any other key cancels");
     } else {
-        draw_footer("enter: connect   F2: save   F3: delete   F4: install badge key   esc: back   space: toggle");
+        draw_footer("enter: connect   " KEYCAP_F2 ": save   " KEYCAP_F3 ": delete   " KEYCAP_F4
+                    ": install badge key   esc: back   space: toggle");
     }
     draw_toast();
 }
@@ -422,9 +426,10 @@ static void draw_key(void) {
     }
 
     if (app.key_confirm_regenerate) {
-        draw_footer("F4 again to replace the key - every server trusting the old one stops working");
+        draw_footer(KEYCAP_F4 " again to replace the key - every server trusting the old one stops working");
     } else {
-        draw_footer("F1: save to SD   F2: save to /int/ssh   F3: print on serial   F4: new key   esc: back");
+        draw_footer(KEYCAP_F1 ": save to SD   " KEYCAP_F2 ": save to /int/ssh   " KEYCAP_F3
+                              ": print on serial   " KEYCAP_F4 ": new key   esc: back");
     }
     draw_toast();
 }
@@ -460,7 +465,7 @@ static void draw_modal_ex(char const* title, char const* body, char const* hint,
         cursor  = newline ? newline + 1 : NULL;
     }
 
-    pax_draw_text(app.fb, COL_DIM, FONT_UI, SIZE_SMALL, box_x + 12, box_y + box_h - 16, hint);
+    keycap_draw_text(app.fb, COL_DIM, FONT_UI, SIZE_SMALL, box_x + 12, box_y + box_h - 16, hint);
 }
 
 static void draw_modal(char const* title, char const* body, char const* hint) {
@@ -484,7 +489,7 @@ static void draw_terminal(void) {
     if (offset > 0) {
         scroll_note = "  [scrollback]";
     }
-    snprintf(status, sizeof(status), "%s  %dx%d%s   fn+esc: menu   fn+F1: zoom", ssh_client_status(app.ssh),
+    snprintf(status, sizeof(status), "%s  %dx%d%s   fn+esc: menu   fn+" KEYCAP_F1 ": zoom", ssh_client_status(app.ssh),
              app.render.cols, app.render.rows, scroll_note);
     term_render_status(&app.render, status);
 
